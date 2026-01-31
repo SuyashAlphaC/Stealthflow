@@ -1,0 +1,10 @@
+[package]
+name = "stealth_flow"
+version = "0.1.0"
+
+[dependencies]
+starknet = "2.4.0"
+garaga = { git = "https://github.com/keep-starknet-strange/garaga.git", branch = "main" }
+
+[[target.starknet-contract]]
+sierra = true
