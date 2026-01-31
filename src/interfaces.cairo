@@ -17,3 +17,17 @@ trait IERC20<TContractState> {
     fn transfer(ref self: TContractState, recipient: ContractAddress, amount: u256) -> bool;
     fn transferFrom(ref self: TContractState, sender: ContractAddress, recipient: ContractAddress, amount: u256) -> bool;
 }
+
+#[derive(Serde, Drop, Copy)]
+struct PragmaPricesResponse {
+    price: u128,
+    decimals: u32,
+    last_updated_timestamp: u64,
+    num_sources_aggregated: u32,
+    expiration_timestamp: Option<u64>,
+}
+
+#[starknet::interface]
+trait IPragmaOracle<TContractState> {
+    fn get_data_median(self: @TContractState, pair_id: felt252) -> PragmaPricesResponse;
+}

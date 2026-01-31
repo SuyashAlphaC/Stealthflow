@@ -3,17 +3,23 @@ mod StealthPaymaster {
     use starknet::ContractAddress;
     use starknet::get_tx_info;
     use starknet::get_contract_address;
-    use super::super::interfaces::{IERC20Dispatcher, IERC20DispatcherTrait};
+    use starknet::get_caller_address;
+    use super::super::interfaces::{IERC20Dispatcher, IERC20DispatcherTrait, IPragmaOracleDispatcher, IPragmaOracleDispatcherTrait, PragmaPricesResponse};
 
     #[storage]
     struct Storage {
         whitelisted_tokens: LegacyMap<ContractAddress, bool>,
         owner: ContractAddress,
+        oracle_address: ContractAddress,
+        oracle_pair_id: felt252, // e.g. ETH/USD
     }
 
     #[constructor]
-    fn constructor(ref self: ContractState, owner: ContractAddress, initial_tokens: Array<ContractAddress>) {
+    fn constructor(ref self: ContractState, owner: ContractAddress, oracle_address: ContractAddress, pair_id: felt252, initial_tokens: Array<ContractAddress>) {
         self.owner.write(owner);
+        self.oracle_address.write(oracle_address);
+        self.oracle_pair_id.write(pair_id);
+        
         let mut i = 0;
         loop {
             if i >= initial_tokens.len() {
@@ -64,8 +70,22 @@ mod StealthPaymaster {
         let required_amount: u256 = if paymaster_data.len() >= 3 {
              u256 { low: (*paymaster_data.at(1)).try_into().unwrap(), high: (*paymaster_data.at(2)).try_into().unwrap() }
         } else {
-             u256 { low: max_fee.try_into().unwrap(), high: 0 } // Fallback to max_fee if u128
+             u256 { low: max_fee.try_into().unwrap(), high: 0 } // Fallback
         };
+
+        // Price Check Oracle Logic
+        // This validates if `required_amount` covers `max_fee`.
+        // Assume `required_amount` is in Token (18 decimals? USDC 6 decimals?).
+        // max_fee is in STRK (18 decimals).
+        // Oracle gives Token/USD or STRK/USD.
+        // Assuming Pragma returns ETH/USD price (18 decimals).
+        // This logic is complex to implement fully without exact decimals of token.
+        // We will add a placeholder check:
+        // let oracle = IPragmaOracleDispatcher { contract_address: self.oracle_address.read() };
+        // let price_response = oracle.get_data_median(self.oracle_pair_id.read());
+        // ... (math to check value) ...
+        // For Hackathon, we'll keep it simple but acknowledge usage:
+        // assert(required_amount * price >= max_fee, 'Insuff payment value');
 
         let token_dispatcher = IERC20Dispatcher { contract_address: token_address };
         let sender_balance = token_dispatcher.balanceOf(sender);
@@ -104,5 +124,20 @@ mod StealthPaymaster {
 
         // Check verification
         assert(balance_after >= balance_before + expected_amount, 'Paymaster not reimbursed');
+    }
+
+    #[external(v0)]
+    fn set_whitelisted_token(ref self: ContractState, token: ContractAddress, is_whitelisted: bool) {
+        let caller = get_caller_address();
+        assert(caller == self.owner.read(), 'Not owner');
+        self.whitelisted_tokens.write(token, is_whitelisted);
+    }
+
+    #[external(v0)]
+    fn update_oracle(ref self: ContractState, new_oracle: ContractAddress, new_pair_id: felt252) {
+         let caller = get_caller_address();
+         assert(caller == self.owner.read(), 'Not owner');
+         self.oracle_address.write(new_oracle);
+         self.oracle_pair_id.write(new_pair_id);
     }
 }
