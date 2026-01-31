@@ -1,1 +1,1 @@
-mod secp256k1_utils;
+pub mod secp256k1_utils;

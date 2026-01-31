@@ -1,11 +1,15 @@
-#[starknet::contract]
-mod StealthAccount {
+#[starknet::contract(account)]
+pub mod StealthAccount {
     use starknet::ContractAddress;
     use starknet::account::Call;
     use starknet::get_tx_info;
     use starknet::syscalls::call_contract_syscall;
     use starknet::SyscallResultTrait;
-    use super::super::crypto::secp256k1_utils::{verify_secp256k1_signature, Secp256k1PublicKey};
+    use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
+    use garaga::signatures::ecdsa::ECDSASignatureWithHint;
+    use stealth_flow::crypto::secp256k1_utils::{
+        verify_secp256k1_signature, Secp256k1PublicKey, SECP256K1_CURVE_ID
+    };
 
     #[storage]
     struct Storage {
@@ -19,12 +23,37 @@ mod StealthAccount {
         self.public_key_y.write(public_key_y);
     }
 
-    #[external(v0)]
-    fn __validate__(ref self: ContractState, calls: Array<Call>) -> felt252 {
-        self.validate_transaction()
+    #[abi(embed_v0)]
+    impl AccountImpl of starknet::account::AccountContract<ContractState> {
+        fn __validate__(ref self: ContractState, calls: Array<Call>) -> felt252 {
+            self.validate_transaction()
+        }
+
+        fn __execute__(ref self: ContractState, calls: Array<Call>) -> Array<Span<felt252>> {
+            let mut results = ArrayTrait::new();
+            let mut i = 0;
+            loop {
+                if i >= calls.len() {
+                    break;
+                }
+                let call = calls.at(i);
+                let result = call_contract_syscall(
+                    *call.to, 
+                    *call.selector, 
+                    *call.calldata
+                ).unwrap_syscall();
+                results.append(result);
+                i += 1;
+            };
+            results
+        }
+
+        fn __validate_declare__(self: @ContractState, class_hash: felt252) -> felt252 {
+            self.validate_transaction()
+        }
     }
 
-    #[external(v0)]
+    #[abi(embed_v0)]
     fn __validate_deploy__(
         ref self: ContractState, 
         class_hash: felt252, 
@@ -35,50 +64,24 @@ mod StealthAccount {
         self.validate_transaction()
     }
 
-    #[external(v0)]
-    fn __execute__(ref self: ContractState, calls: Array<Call>) -> Array<Span<felt252>> {
-        // Note: In SNIP-6, __validate__ is called by sequencer before __execute__.
-        // We don't re-validate here to save gas.
-        
-        let mut results = ArrayTrait::new();
-        let mut i = 0;
-        loop {
-            if i >= calls.len() {
-                break;
-            }
-            let call = calls.at(i);
-            let result = call_contract_syscall(
-                *call.to, 
-                *call.selector, 
-                *call.calldata
-            ).unwrap_syscall();
-            results.append(result);
-            i += 1;
-        };
-        results
-    }
-
     #[generate_trait]
     impl InternalFunctions of InternalFunctionsTrait {
         fn validate_transaction(self: @ContractState) -> felt252 {
             let tx_info = get_tx_info().unbox();
-            let signature = tx_info.signature;
+            let mut signature = tx_info.signature;
             
-            // Signature format: [r_low, r_high, s_low, s_high, ...garaga_hints]
-            // Minimum 4 felts required for r and s (2 felts each for u256)
-            if signature.len() < 4 {
-                return 0; // Invalid signature length
+            // Deserialize ECDSASignatureWithHint from signature span
+            let signature_with_hint = Serde::<ECDSASignatureWithHint>::deserialize(ref signature);
+            
+            if signature_with_hint.is_none() {
+                return 0; // Invalid signature format
             }
 
             let pk_x = self.public_key_x.read();
             let pk_y = self.public_key_y.read();
             let public_key = Secp256k1PublicKey { x: pk_x, y: pk_y };
 
-            // Transaction hash as the message being signed
-            let msg_hash: u256 = tx_info.transaction_hash.into();
-
-            // Pass the entire signature span (includes r, s, and Garaga hints)
-            if verify_secp256k1_signature(msg_hash, signature, public_key) {
+            if verify_secp256k1_signature(signature_with_hint.unwrap(), public_key) {
                 starknet::VALIDATED
             } else {
                 0
@@ -86,7 +89,6 @@ mod StealthAccount {
         }
     }
 
-    // View function to get public key
     #[external(v0)]
     fn get_public_key(self: @ContractState) -> (u256, u256) {
         (self.public_key_x.read(), self.public_key_y.read())

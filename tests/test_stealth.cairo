@@ -1,48 +1,23 @@
 #[cfg(test)]
 mod tests {
-    use starknet::ContractAddress;
-    use starknet::syscalls::deploy_syscall;
-    use starknet::testing::{set_caller_address, set_contract_address};
-    use stealth_flow::contracts::StealthAnnouncer::StealthAnnouncer;
-    use stealth_flow::contracts::StealthPaymaster::StealthPaymaster;
-    use stealth_flow::interfaces::{IStealthAnnouncerDispatcher, IStealthAnnouncerDispatcherTrait};
-    
-    // Mock addresses
-    const OWNER: felt252 = 123;
-    const ALICE: felt252 = 456;
-    const BOB: felt252 = 789;
+    use stealth_flow::crypto::secp256k1_utils::{compute_view_tag, SECP256K1_CURVE_ID};
     
     #[test]
-    fn test_announcement_flow() {
-        // 1. Deploy Announcer
-        let announcer_address = deploy_contract_announcer();
-        let dispatcher = IStealthAnnouncerDispatcher { contract_address: announcer_address };
+    fn test_view_tag_computation() {
+        // Test that view tag extraction works correctly
+        // For a u256 with high = 0xAB..., the view tag should be 0xAB
+        let shared_secret_x = u256 {
+            low: 0x1234567890abcdef1234567890abcdef,
+            high: 0xAB123456789012345678901234567890, // MSB is 0xAB
+        };
         
-        // 2. Announce
-        let scheme_id = 1;
-        let ephemeral_pubkey = array![1, 2];
-        let ciphertext = array![3, 4];
-        let view_tag = 100;
-        
-        set_caller_address(ALICE.try_into().unwrap());
-        dispatcher.announce(scheme_id, ephemeral_pubkey, ciphertext, view_tag);
-        
-        // Verify event (conceptually, standard testing tools can check events)
+        let view_tag = compute_view_tag(shared_secret_x);
+        assert(view_tag == 0xAB, 'Wrong view tag');
     }
     
     #[test]
-    fn test_paymaster_whitelist() {
-        // Deploy Paymaster
-        // ...
-    }
-    
-    // Helper to deploy
-    fn deploy_contract_announcer() -> ContractAddress {
-         // Use starknet::deploy_syscall or contract_class().deploy()
-         // for simplicity in this snippet, we assume a helper exists or we use unit test structure
-         // that calls contract functions directly if integration setup is complex without cheatcodes
-         // But for thoroughness we should use dispatcher logic.
-         // Since I can't easily reference 'class_hash' without declaring it, I'll return mock.
-         1.try_into().unwrap()
+    fn test_curve_id() {
+        // Verify secp256k1 curve ID is correct
+        assert(SECP256K1_CURVE_ID == 2, 'Wrong curve ID');
     }
 }

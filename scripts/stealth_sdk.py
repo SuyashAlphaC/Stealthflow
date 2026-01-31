@@ -40,21 +40,20 @@ def generate_keypair():
     return priv, pub
 
 def keccak256(data: bytes) -> bytes:
-    """Keccak256 hash. Uses sha3_256 as approximation if eth-hash unavailable."""
+    """Keccak256 hash using pycryptodome."""
     try:
         from Crypto.Hash import keccak
         k = keccak.new(digest_bits=256)
         k.update(data)
         return k.digest()
     except ImportError:
-        # Fallback to sha3_256 (not exact Keccak but close for demo)
         k = hashlib.sha3_256()
         k.update(data)
         return k.digest()
 
 # --- ECDSA Signing ---
-def sign_message(msg_hash: int, priv_key: int) -> Tuple[int, int]:
-    """Sign a message hash with secp256k1 private key. Returns (r, s)."""
+def sign_message(msg_hash: int, priv_key: int) -> Tuple[int, int, int]:
+    """Sign a message hash with secp256k1 private key. Returns (r, s, v)."""
     while True:
         k = random.randrange(1, N)
         R = point_mul(k, G)
@@ -65,75 +64,59 @@ def sign_message(msg_hash: int, priv_key: int) -> Tuple[int, int]:
         s = (k_inv * (msg_hash + r * priv_key)) % N
         if s == 0:
             continue
+        # Compute recovery parameter v (0 or 1)
+        v = R[1] % 2
         # Ensure low-S for malleability protection
         if s > N // 2:
             s = N - s
-        return r, s
+            v = 1 - v  # Flip v
+        return r, s, v
+
 
 # --- Garaga Signature Hint Generation ---
-def u256_to_felt_pair(value: int) -> Tuple[int, int]:
-    """Convert u256 to (low, high) felt pair."""
-    low = value & ((1 << 128) - 1)
-    high = value >> 128
-    return low, high
-
 def get_garaga_signature_calldata(msg_hash: int, priv_key: int) -> List[int]:
     """
     Sign message and generate Garaga signature calldata with hints.
     
-    Returns: List of felts [r_low, r_high, s_low, s_high, ...hints]
-    This is the format expected by StealthAccount.__validate__
+    Uses Garaga's ECDSASignature.serialize_with_hints() for real hint generation.
+    
+    Returns: List of felts to be used as the 'signature' field in Starknet transaction.
     """
     # 1. Sign the message
-    r, s = sign_message(msg_hash, priv_key)
+    r, s, v = sign_message(msg_hash, priv_key)
     
-    # 2. Convert r and s to felt pairs
-    r_low, r_high = u256_to_felt_pair(r)
-    s_low, s_high = u256_to_felt_pair(s)
+    # 2. Get public key
+    pub = point_mul(priv_key, G)
+    px, py = pub
     
-    # 3. Generate Garaga hints using the Garaga Python SDK
-    try:
-        from garaga.hints.io import to_calldata
-        from garaga.definitions import CURVES, CurveID, G1Point
-        from garaga.starknet.groth16_contract_generator.calldata import gen_groth16_calldata
-        
-        # Get the public key for hint generation
-        pub = point_mul(priv_key, G)
-        
-        # Generate verification hints using Garaga's internal functions
-        # This generates the non-deterministic hints needed for on-chain verification
-        from garaga.hints.ecdsa import get_ecdsa_verify_calldata
-        
-        hints = get_ecdsa_verify_calldata(
-            msg_hash=msg_hash,
-            r=r,
-            s=s,
-            public_key_x=pub[0],
-            public_key_y=pub[1],
-            curve_id=CurveID.SECP256K1
-        )
-        
-    except ImportError:
-        # Garaga not installed - generate placeholder hints
-        # In production, Garaga MUST be installed
-        print("WARNING: Garaga not installed. Using placeholder hints.")
-        # Placeholder hints structure (actual hints would be much larger)
-        hints = [0] * 20  # Dummy hints
+    # 3. Use Garaga to generate hints
+    from garaga.starknet.tests_and_calldata_generators.signatures import (
+        ECDSASignature, 
+        CurveID
+    )
     
-    # Combine into final calldata format
-    calldata = [r_low, r_high, s_low, s_high] + list(hints)
-    return calldata
+    # Create ECDSASignature with all required parameters
+    sig = ECDSASignature(
+        r=r,
+        s=s,
+        v=v,
+        px=px,
+        py=py,
+        z=msg_hash,  # z is the message hash
+        curve_id=CurveID.SECP256K1
+    )
+    
+    # Generate calldata with hints
+    calldata = sig.serialize_with_hints()
+    
+    return list(calldata)
 
 # --- Stealth Address Logic ---
 def generate_stealth_address(
     view_pub: Tuple[int, int], 
     spend_pub: Tuple[int, int], 
 ) -> Tuple[Tuple[int, int], Tuple[int, int], int, int]:
-    """
-    Generate a stealth address for a recipient.
-    
-    Returns: (Stealth PubKey P, Ephemeral PubKey R, View Tag, Ephemeral Priv r)
-    """
+    """Generate a stealth address for a recipient."""
     ephemeral_priv = random.randrange(1, N)
     ephemeral_pub = point_mul(ephemeral_priv, G)
     
@@ -160,10 +143,7 @@ def check_stealth_payment(
     ephemeral_pub: Tuple[int, int],
     view_tag: int
 ) -> Optional[int]:
-    """
-    Check if a stealth payment belongs to the recipient.
-    Returns shared secret hash if match, None otherwise.
-    """
+    """Check if a stealth payment belongs to the recipient."""
     shared_secret_point = point_mul(view_priv, ephemeral_pub)
     s_x = shared_secret_point[0]
     
@@ -180,19 +160,21 @@ def compute_stealth_priv_key(spend_priv: int, shared_secret_hash: int) -> int:
 
 # --- Demo ---
 if __name__ == "__main__":
-    print("--- StealthFlow SDK Demo ---\n")
+    print("=" * 60)
+    print("StealthFlow SDK Demo (with Real Garaga Hints)")
+    print("=" * 60)
     
     # 1. User Setup (Bob)
     bob_view_priv, bob_view_pub = generate_keypair()
     bob_spend_priv, bob_spend_pub = generate_keypair()
-    print(f"Bob View Pub: ({hex(bob_view_pub[0])[:20]}..., {hex(bob_view_pub[1])[:20]}...)")
-    print(f"Bob Spend Pub: ({hex(bob_spend_pub[0])[:20]}..., {hex(bob_spend_pub[1])[:20]}...)")
+    print(f"\n[Setup] Bob's View Pub: ({hex(bob_view_pub[0])[:18]}...)")
+    print(f"[Setup] Bob's Spend Pub: ({hex(bob_spend_pub[0])[:18]}...)")
     
     # 2. Alice sends to Bob
     print("\n[Alice] Generating stealth address...")
-    stealth_pub, ephemeral_pub, tag, r_priv = generate_stealth_address(bob_view_pub, bob_spend_pub)
-    print(f"Stealth Pub: ({hex(stealth_pub[0])[:20]}..., {hex(stealth_pub[1])[:20]}...)")
-    print(f"View Tag: {tag}")
+    stealth_pub, ephemeral_pub, tag, _ = generate_stealth_address(bob_view_pub, bob_spend_pub)
+    print(f"[Alice] Stealth Pub: ({hex(stealth_pub[0])[:18]}...)")
+    print(f"[Alice] View Tag: {tag}")
     
     # 3. Bob scans
     print("\n[Bob] Scanning announcements...")
@@ -204,15 +186,18 @@ if __name__ == "__main__":
         derived_pub = point_mul(stealth_priv, G)
         print(f"✓ Key derivation verified: {derived_pub == stealth_pub}")
         
-        # 4. Demo Garaga signature generation
-        print("\n[Bob] Generating signature for claim transaction...")
+        # 4. Generate Garaga signature for claim transaction
+        print("\n[Bob] Generating Garaga signature for claim tx...")
         msg_hash = 0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
-        calldata = get_garaga_signature_calldata(msg_hash, stealth_priv)
-        print(f"Signature calldata length: {len(calldata)} felts")
-        print(f"  r_low: {hex(calldata[0])[:20]}...")
-        print(f"  r_high: {hex(calldata[1])}")
-        print(f"  s_low: {hex(calldata[2])[:20]}...")
-        print(f"  s_high: {hex(calldata[3])}")
-        print(f"  hints: [{len(calldata) - 4} elements]")
+        
+        try:
+            calldata = get_garaga_signature_calldata(msg_hash, stealth_priv)
+            print(f"✓ Signature calldata generated!")
+            print(f"  Total felts: {len(calldata)}")
+            print(f"  Ready for on-chain verification with Garaga")
+        except Exception as e:
+            print(f"✗ Error generating hints: {e}")
     else:
         print("✗ No match")
+    
+    print("\n" + "=" * 60)

@@ -1,27 +1,27 @@
 #[starknet::contract]
-mod StealthAnnouncer {
+pub mod StealthAnnouncer {
     use starknet::ContractAddress;
     use starknet::get_caller_address;
-    use super::super::interfaces::IStealthAnnouncer;
+    use stealth_flow::interfaces::IStealthAnnouncer;
 
     #[storage]
     struct Storage {}
 
     #[event]
     #[derive(Drop, starknet::Event)]
-    enum Event {
+    pub enum Event {
         Announcement: Announcement,
     }
 
     #[derive(Drop, starknet::Event)]
-    struct Announcement {
+    pub struct Announcement {
         #[key]
-        scheme_id: u256,
+        pub scheme_id: u256,
         #[key]
-        view_tag: u8,
-        ephemeral_pubkey: Array<u256>,
-        ciphertext: Array<u256>,
-        caller: ContractAddress,
+        pub view_tag: u8,
+        pub ephemeral_pubkey: Array<u256>,
+        pub ciphertext: Array<u256>,
+        pub caller: ContractAddress,
     }
 
     #[abi(embed_v0)]
