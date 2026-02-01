@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { RpcProvider } from 'starknet';
 import {
     checkStealthPayment,
     Point,
@@ -10,6 +11,7 @@ import {
     formatPoint
 } from '../stealth-crypto';
 import { parseEphemeralPubkeyFromEvent, AnnouncementEvent } from '../eventScanner';
+import { CONTRACTS, getProvider } from '../contracts';
 
 interface ScanEntry {
     id: string;
@@ -44,14 +46,155 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
     const [spendPriv, setSpendPriv] = useState<bigint | null>(null);
     const [scanStats, setScanStats] = useState({ total: 0, filtered: 0, matches: 0 });
 
-    // Demo: Generate keys on mount
-    useEffect(() => {
-        const viewKey = generateKeypair();
-        const spendKey = generateKeypair();
-        setViewPriv(viewKey.privateKey);
-        setSpendPub(spendKey.publicKey);
-        setSpendPriv(spendKey.privateKey);
-    }, []);
+    // Key input fields
+    const [viewPrivInput, setViewPrivInput] = useState('');
+    const [spendPrivInput, setSpendPrivInput] = useState('');
+    const [keysSet, setKeysSet] = useState(false);
+
+    // Set keys from input
+    const handleSetKeys = () => {
+        try {
+            const vPriv = BigInt(viewPrivInput);
+            const sPriv = BigInt(spendPrivInput);
+            setViewPriv(vPriv);
+            setSpendPriv(sPriv);
+            // Derive spend public key from private
+            const sPub = getPublicKey(sPriv);
+            setSpendPub(sPub);
+            setKeysSet(true);
+        } catch (e) {
+            console.error('Invalid key format:', e);
+        }
+    };
+
+    // Fetch real events from StealthAnnouncer
+    const [scanError, setScanError] = useState<string | null>(null);
+
+    const fetchRealEvents = useCallback(async () => {
+        if (!viewPriv || !spendPub || !spendPriv) return;
+
+        setScanError(null);
+
+        try {
+            const provider = getProvider('sepolia');
+
+            // Get recent block number first
+            const blockNumber = await provider.getBlockNumber();
+            console.log('[Scanner] Current block:', blockNumber);
+
+            // Only fetch last 10000 blocks to avoid timeout
+            const fromBlock = Math.max(0, blockNumber - 10000);
+
+            // Get events from StealthAnnouncer
+            console.log('[Scanner] Fetching events from contract:', CONTRACTS.STEALTH_ANNOUNCER);
+            console.log('[Scanner] Block range:', fromBlock, '->', blockNumber);
+
+            const events = await provider.getEvents({
+                address: CONTRACTS.STEALTH_ANNOUNCER,
+                from_block: { block_number: fromBlock },
+                to_block: { block_number: blockNumber },
+                keys: [], // All events
+                chunk_size: 100
+            });
+
+            console.log('[Scanner] Found events:', events.events.length);
+
+            if (events.events.length === 0) {
+                setScanError('No announcements found in recent blocks');
+                return;
+            }
+
+            for (const event of events.events) {
+                console.log('[Scanner] Processing event:', event);
+
+                // Parse event data
+                // Event keys: [event_selector, scheme_id_low, scheme_id_high, view_tag]
+                // Note: view_tag is the 4th key (index 3)
+                const viewTag = event.keys.length > 3 ? Number(event.keys[3]) : 0;
+
+                // Parse ephemeral pubkey from event data
+                // data structure for Array<u256>: [array_len, elem0_low, elem0_high, elem1_low, elem1_high, ...]
+                if (event.data.length >= 5) {
+                    // Skip array length (data[0]), then get x and y as u256 (each has low, high)
+                    const ephXLow = BigInt(event.data[1] || '0');
+                    const ephXHigh = BigInt(event.data[2] || '0');
+                    const ephYLow = BigInt(event.data[3] || '0');
+                    const ephYHigh = BigInt(event.data[4] || '0');
+
+                    // Reconstruct u256: value = low + (high << 128)
+                    const ephX = ephXLow + (ephXHigh << BigInt(128));
+                    const ephY = ephYLow + (ephYHigh << BigInt(128));
+
+                    console.log('[Scanner] Parsed ephemeral pub:', { x: ephX.toString(16), y: ephY.toString(16) });
+
+                    const ephemeralPub: Point = { x: ephX, y: ephY };
+
+                    const entryId = event.transaction_hash + '-' + event.block_number;
+
+                    // Check if already processed
+                    if (scanLog.find(e => e.id === entryId)) continue;
+
+                    const entry: ScanEntry = {
+                        id: entryId,
+                        timestamp: new Date(),
+                        viewTag,
+                        ephemeralPub,
+                        isMatch: false,
+                        schemeId: 1,
+                        txHash: event.transaction_hash,
+                        blockNumber: event.block_number || 0
+                    };
+
+                    // Check if this matches our viewing key
+                    const result = checkStealthPayment(
+                        viewPriv,
+                        spendPub,
+                        ephemeralPub,
+                        viewTag
+                    );
+
+                    console.log('[Scanner] Match result:', result !== null ? 'MATCH!' : 'no match');
+
+                    if (result !== null) {
+                        entry.isMatch = true;
+
+                        // Derive stealth private key
+                        const stealthPriv = computeStealthPrivKey(spendPriv, result);
+                        const stealthPub = getPublicKey(stealthPriv);
+
+                        const fund: DiscoveredFund = {
+                            stealthPub,
+                            stealthPriv,
+                            ephemeralPub,
+                            amount: 'Check balance',
+                            token: 'STRK',
+                            txHash: event.transaction_hash
+                        };
+
+                        setDiscoveredFunds(prev => [...prev, fund]);
+                        onFundDiscovered(fund);
+
+                        setScanStats(prev => ({
+                            ...prev,
+                            total: prev.total + 1,
+                            matches: prev.matches + 1
+                        }));
+                    } else {
+                        setScanStats(prev => ({
+                            ...prev,
+                            total: prev.total + 1,
+                            filtered: prev.filtered + 1
+                        }));
+                    }
+
+                    setScanLog(prev => [entry, ...prev].slice(0, 50));
+                }
+            }
+        } catch (error) {
+            console.error('[Scanner] Error fetching events:', error);
+            setScanError(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }, [viewPriv, spendPub, spendPriv, onFundDiscovered, scanLog]);
 
     // Simulate scanning announcements
     const simulateScan = useCallback(() => {
@@ -177,13 +320,15 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
         setScanLog(prev => [entry, ...prev].slice(0, 50));
     }, [viewPriv, spendPub, spendPriv, onFundDiscovered]);
 
-    // Auto-scan interval
+    // Scanning: fetch real events when started
     useEffect(() => {
-        if (!isScanning) return;
+        if (!isScanning || !keysSet) return;
 
-        const interval = setInterval(simulateScan, 800);
+        // Fetch real events once, then poll
+        fetchRealEvents();
+        const interval = setInterval(fetchRealEvents, 5000);
         return () => clearInterval(interval);
-    }, [isScanning, simulateScan]);
+    }, [isScanning, keysSet, fetchRealEvents]);
 
     return (
         <div className="space-y-6">
@@ -199,7 +344,8 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
                 </div>
                 <button
                     onClick={() => setIsScanning(!isScanning)}
-                    className={isScanning ? 'btn-secondary' : 'btn-primary'}
+                    disabled={!keysSet}
+                    className={`${isScanning ? 'btn-secondary' : 'btn-primary'} ${!keysSet ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                     {isScanning ? (
                         <span className="flex items-center gap-2">
@@ -214,6 +360,61 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
                     )}
                 </button>
             </div>
+
+            {/* Key Input Section */}
+            {!keysSet ? (
+                <div className="card border-[var(--accent-primary)] border-opacity-30">
+                    <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wide mb-4">
+                        🔑 Enter Your Private Keys to Scan
+                    </h3>
+                    <p className="text-xs text-[var(--text-muted)] mb-4">
+                        Get these from <code className="bg-[var(--surface)] px-1 rounded">python3 stealth_sdk.py --announce</code>
+                    </p>
+                    <div className="space-y-3">
+                        <div>
+                            <label className="text-xs text-[var(--text-muted)] block mb-1">View Private Key</label>
+                            <input
+                                type="text"
+                                className="input font-mono text-xs"
+                                placeholder="0x5c46b5e558363b094b9af3b8cd51f7e6..."
+                                value={viewPrivInput}
+                                onChange={(e) => setViewPrivInput(e.target.value)}
+                            />
+                        </div>
+                        <div>
+                            <label className="text-xs text-[var(--text-muted)] block mb-1">Spend Private Key</label>
+                            <input
+                                type="text"
+                                className="input font-mono text-xs"
+                                placeholder="0x17f736d188a2c9ad99ff34493473b03c..."
+                                value={spendPrivInput}
+                                onChange={(e) => setSpendPrivInput(e.target.value)}
+                            />
+                        </div>
+                        <button
+                            onClick={handleSetKeys}
+                            disabled={!viewPrivInput || !spendPrivInput}
+                            className={`w-full btn-primary ${!viewPrivInput || !spendPrivInput ? 'opacity-50' : ''}`}
+                        >
+                            Set Keys & Enable Scanning
+                        </button>
+                    </div>
+                </div>
+            ) : (
+                <div className="space-y-3">
+                    <div className="card bg-[var(--accent-success)] bg-opacity-10 border-[var(--accent-success)] border-opacity-30">
+                        <div className="flex items-center gap-2 text-[var(--accent-success)]">
+                            <span>✓</span>
+                            <span className="text-sm font-medium">Keys loaded - ready to scan for your payments</span>
+                        </div>
+                    </div>
+                    {scanError && (
+                        <div className="card bg-[var(--accent-error)] bg-opacity-10 border-[var(--accent-error)] border-opacity-30">
+                            <div className="text-sm text-[var(--accent-error)]">{scanError}</div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Stats Bar */}
             <div className="grid grid-cols-3 gap-4">

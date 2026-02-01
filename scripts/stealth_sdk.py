@@ -224,6 +224,65 @@ if __name__ == "__main__":
         print_test_vector()
         sys.exit(0)
     
+    if len(sys.argv) > 1 and sys.argv[1] == "--announce":
+        # Generate announcement data for on-chain use
+        print("\n" + "=" * 70)
+        print("STEALTH ANNOUNCEMENT DATA (for on-chain announce() call)")
+        print("=" * 70)
+        
+        # Generate Bob's keys
+        bob_view_priv, bob_view_pub = generate_keypair()
+        bob_spend_priv, bob_spend_pub = generate_keypair()
+        
+        # Generate stealth address
+        stealth_pub, ephemeral_pub, view_tag, ephemeral_priv = generate_stealth_address(
+            bob_view_pub, bob_spend_pub
+        )
+        
+        print("\n[Bob's Meta-Address (recipient publishes this)]")
+        print(f"  view_pub_x:  {hex(bob_view_pub[0])}")
+        print(f"  view_pub_y:  {hex(bob_view_pub[1])}")
+        print(f"  spend_pub_x: {hex(bob_spend_pub[0])}")
+        print(f"  spend_pub_y: {hex(bob_spend_pub[1])}")
+        
+        print("\n[Ephemeral Public Key (for announce() call)]")
+        print(f"  ephemeral_x: {ephemeral_pub[0]}")
+        print(f"  ephemeral_y: {ephemeral_pub[1]}")
+        print(f"  ephemeral_x_hex: {hex(ephemeral_pub[0])}")
+        print(f"  ephemeral_y_hex: {hex(ephemeral_pub[1])}")
+        
+        print(f"\n[View Tag]")
+        print(f"  view_tag: {view_tag}")
+        
+        print("\n[Stealth Address (where to send funds)]")
+        print(f"  stealth_pub_x: {hex(stealth_pub[0])}")
+        print(f"  stealth_pub_y: {hex(stealth_pub[1])}")
+        
+        # Split for Cairo u256
+        print("\n[For Cairo StealthAccount Deployment]")
+        print(f"  stealth_pub_x_low:  {stealth_pub[0] & ((1 << 128) - 1)}")
+        print(f"  stealth_pub_x_high: {stealth_pub[0] >> 128}")
+        print(f"  stealth_pub_y_low:  {stealth_pub[1] & ((1 << 128) - 1)}")
+        print(f"  stealth_pub_y_high: {stealth_pub[1] >> 128}")
+        
+        print("\n[Bob's Private Keys (save securely for claiming)]")
+        print(f"  view_priv:  {hex(bob_view_priv)}")
+        print(f"  spend_priv: {hex(bob_spend_priv)}")
+        
+        print("\n[sncast announce command]")
+        print(f"sncast invoke --network sepolia \\")
+        print(f"  --contract-address <ANNOUNCER_ADDRESS> \\")
+        print(f"  --function announce \\")
+        print(f"  --arguments '1, 2, {ephemeral_pub[0]}, {ephemeral_pub[1]}, 0, {view_tag}'")
+        
+        print("\n[sncast deploy StealthAccount command]")
+        print(f"sncast deploy --network sepolia \\")
+        print(f"  --class-hash 0x12cdffb7d81d52c38f0c7fa382ab698ccf50d69b7509080a8b3a656b106d003 \\")
+        print(f"  --arguments '{stealth_pub[0] & ((1 << 128) - 1)}, {stealth_pub[0] >> 128}, {stealth_pub[1] & ((1 << 128) - 1)}, {stealth_pub[1] >> 128}'")
+        
+        print("\n" + "=" * 70)
+        sys.exit(0)
+    
     print("=" * 60)
     print("StealthFlow SDK Demo (with Real Garaga Hints)")
     print("=" * 60)
