@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Point, formatPoint, computeStealthAddress } from '../stealth-crypto';
 import { CONTRACTS, getProvider, computeStealthAccountAddress } from '../contracts';
 import { CallData } from 'starknet';
+import { useAccount } from '@starknet-react/core';
 
 interface ClaimStep {
     id: number;
@@ -35,6 +36,7 @@ export function GaslessClaim({ fund, onClose }: Props) {
     const [isProcessing, setIsProcessing] = useState(false);
     const [isComplete, setIsComplete] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const { address: recipientAddress } = useAccount();
 
     const simulateStep = (stepIndex: number): Promise<void> => {
         return new Promise((resolve, reject) => {
@@ -81,6 +83,7 @@ export function GaslessClaim({ fund, onClose }: Props) {
                 console.log('Funds ready at stealth address.');
             }
 
+
             if (i === 1) { // Deploy Step - Real Check
                 // 1. Calculate Real Address
                 const contractAddress = computeStealthAccountAddress(fund.stealthPub);
@@ -98,20 +101,39 @@ export function GaslessClaim({ fund, onClose }: Props) {
                     console.log(`[Claim] Balance at Account ${contractAddress}: ${balance.toString()} wei`);
 
                     if (balance > BigInt(0)) {
-                        console.log('%c[Claim] ✅ Account funded and ready for deployment', 'color: green');
+                        console.log('%c[Claim] ✅ Account funded', 'color: green');
                     } else {
-                        console.warn('%c[Claim] ⚠️ Account has 0 balance. Transfer might have used legacy address logic.', 'color: orange');
-                        console.log('Legacy Address (Key-based):', computeStealthAddress(fund.stealthPub));
+                        console.warn('%c[Claim] ⚠️ Account has 0 balance.', 'color: orange');
                     }
                 } catch (e) {
-                    console.error('[Claim] Failed to check balance:', e);
+                    console.warn('[Claim] Balance check skipped/failed');
                 }
             }
 
             try {
-                // For actual deployment, we need signature hints (Garaga) which are not available client-side.
-                // We perform the READ-ONLY checks above to verify "Reality", then simulate the WRITE TX.
-                await simulateStep(i);
+                if (i === 2) { // Execute Step via API
+                    if (!recipientAddress) throw new Error("Wallet not connected");
+
+                    console.log('[Claim] Invoking Backend Automation...');
+                    const response = await fetch('/api/claim', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            stealthPriv: '0x' + fund.stealthPriv.toString(16),
+                            recipient: recipientAddress
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (!response.ok || !result.success) {
+                        throw new Error(result.error || 'Automation failed');
+                    }
+
+                    console.log('[Claim] Backend Logs:', result.logs);
+                } else {
+                    // Short delay for UI
+                    await new Promise(r => setTimeout(r, 1000));
+                }
 
                 setSteps(prev => prev.map((s, idx) =>
                     idx === i ? { ...s, status: 'complete' } : s

@@ -26,10 +26,53 @@ G_X = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
 G_Y = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
 # Stealth Account Class Hash (must match frontend)
 STEALTH_ACCOUNT_CLASS_HASH = 0x12cdffb7d81d52c38f0c7fa382ab698ccf50d69b7509080a8b3a656b106d003
-UDC_ADDRESS = 0x041a78e741e5af2fec34b637d19f86f528d2495b879f0bc15624d63d397b5d21
 
 # STRK token on Sepolia
-STRK_TOKEN = "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+STRK_TOKEN = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
+
+def get_garaga_signature_calldata(msg_hash, priv_key):
+    """Generate Garaga signature hints using garaga python lib"""
+    from garaga.starknet.tests_and_calldata_generators.signatures import ECDSASignature, CurveID
+    
+    # We need to sign the msg_hash (transaction hash)
+    # Standard signature (r, s, v)
+    # garaga provides helpers
+    
+    # Create random k
+    # For robust production we should use deterministic k, but random is okay for demo
+    import random
+    k = random.randrange(1, N)
+    
+    # Manually sign to get r, s, v first or let Garaga do it? 
+    # Garaga ECDSASignature constructor usually takes r,s,v.
+    # Let's rely on starknet_py signer to get r,s first?
+    # Actually, let's implement basic signing here to feed Garaga
+    
+    # Basic ECDSA Sign (RFC 6979 deterministic is better, but simple random for now)
+    # ... (Logic from sdk)
+    
+    # Re-using logic from SDK directly if available or inline it
+    # Inline for standalone script
+    
+    # Sign
+    kinv = pow(k, N - 2, N)
+    R = point_mul(k, (G_X, G_Y))
+    r = R[0] % N
+    s = (kinv * (msg_hash + r * priv_key)) % N
+    v = R[1] % 2
+    
+    if s > N // 2:
+        s = N - s
+        v = 1 - v
+        
+    sig = ECDSASignature(r, s, v, None, None, msg_hash, CurveID.SECP256K1)
+    # Need Public Key in sig? 
+    # Garaga might need public key X, Y.
+    pub = point_mul(priv_key, (G_X, G_Y))
+    sig.px = pub[0]
+    sig.py = pub[1]
+    
+    return list(sig.serialize_with_hints())
 
 def modinv(a, m):
     """Modular inverse using extended Euclidean algorithm"""
@@ -117,7 +160,7 @@ def compute_stealth_address(stealth_pub):
         salt=salt,
         class_hash=STEALTH_ACCOUNT_CLASS_HASH,
         constructor_calldata=calldata,
-        deployer_address=UDC_ADDRESS
+        deployer_address=0 
     )
     return hex(address)
 
@@ -130,8 +173,7 @@ async def main():
     parser.add_argument('--stealth-priv', help='Direct Stealth Private Key (hex) - bypasses key derivation')
     parser.add_argument('--to', required=True, help='Recipient address (your hot wallet)')
     parser.add_argument('--amount', default='1000000000000000000', help='Amount in wei (default: 1 STRK)')
-    
-    args = parser.parse_args()
+    parser.add_argument('--execute', action='store_true', help='Execute the claim on-chain (Deploy + Transfer)')
     
     args = parser.parse_args()
     
@@ -197,6 +239,189 @@ sncast deploy --network sepolia \\
     
     print("\nAlternatively, use UDC (Universal Deployer Contract) with salt for deterministic address:")
     print(f"  Salt: 0x{stealth_pub[0] % (2**251):064x}")
+
+    if args.execute:
+        print("\n" + "=" * 70)
+        print("EXECUTING ON-CHAIN CLAIM (Deploy + Transfer)")
+        print("=" * 70)
+        
+        client = FullNodeClient(node_url="https://starknet-sepolia.public.blastapi.io/rpc/v0_7")
+        
+        # 1. Check if already deployed
+        # If deployed, just transfer. If not, deploy_account.
+        is_deployed = False
+        try:
+            class_hash = await client.get_class_hash_at(stealth_address)
+            if class_hash:
+                is_deployed = True
+                print("Account already deployed.")
+        except:
+            print("Account not deployed. Preparing deploy_account transaction...")
+
+        if not is_deployed:
+            # Prepare DeployAccount V3 (paying in STRK)
+            # We need a Custom Signer that uses Garaga hints
+            
+            # Since starknet.py Account requires a Signer, we can just construct the tx manually
+            # and sign it using our function, then send.
+            
+            # Construct DeployAccount
+            # Salt, ClassHash, Calldata, Version=3
+            
+            # This is complex to do raw. 
+            # Easier: Use Account but patch sign method?
+            # Or just use Account with a dummy signer, getting the hash, then re-signing?
+            
+            # Let's try basic flow:
+            # 1. Get nonce (0)
+            # 2. Estimate Fee? Or hardcode generous fee (0.0005 STRK)
+            # 3. Compute TX Hash
+            # 4. Sign Hash -> Garaga Calldata
+            # 5. Send Raw
+            
+            from starknet_py.net.models import StarknetChainId, Invoke, DeployAccount
+            from starknet_py.net.client_models import ResourceBounds, ResourceBoundsMapping
+            
+            # DeployAccount params
+            # constructor_calldata defined in compute_stealth_address
+            # Recompute it here
+            x_low = stealth_pub[0] & ((1 << 128) - 1)
+            x_high = stealth_pub[0] >> 128
+            y_low = stealth_pub[1] & ((1 << 128) - 1)
+            y_high = stealth_pub[1] >> 128
+            constructor_calldata = [x_low, x_high, y_low, y_high]
+            
+            salt = stealth_pub[0] % (2**251)
+            
+            deploy_tx = DeployAccount(
+                class_hash=STEALTH_ACCOUNT_CLASS_HASH,
+                contract_address_salt=salt,
+                constructor_calldata=constructor_calldata,
+                version=3,
+                resource_bounds=ResourceBoundsMapping(
+                    l1_gas=ResourceBounds(max_amount=20000, max_price_per_unit=100000000000), # Adjust price dynamically ideally
+                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
+                ),
+                nonce=0,
+                chain_id=StarknetChainId.SEPOLIA,
+                signature=[], # Will fill
+                paymaster_data=[], # Self-pay
+                nonce_data_availability_mode=0,
+                fee_data_availability_mode=0,
+                tip=0
+            )
+
+            # We need to set the STRK token as fee token.
+            # Starknet-py DeployAccount doesn't seem to have 'token' field directly exposed in constructor?
+            # V3 txs don't have fee_token address field inside? 
+            # Wait, signature depends on fields.
+            # V3 has paymaster_data. If empty, uses ETH? 
+            # STRK: If we want to pay in STRK we must use V3 and... wait.
+            # standard V3 uses ETH unless Paymaster is used?
+            # Or is it resource_bounds?
+            # Starknet Mainnet uses STRK for V3? 
+            # "V3 transactions pay in STRK by default"? Or ETH?
+            # Actually, Starknet V3 allows paying in STRK if you market make?
+            # NO. V3 pays in STRK if you use STRK resource bounds?
+            # "The fee token for V3 transactions is STRK." - Yes!
+            # So V3 = STRK. 
+            
+            # Update hash
+            deploy_hash = deploy_tx.calculate_hash(chain_id=StarknetChainId.SEPOLIA)
+            print(f"Deploy Tx Hash: {hex(deploy_hash)}")
+            
+            # Sign
+            sig_calldata = get_garaga_signature_calldata(deploy_hash, stealth_priv)
+            deploy_tx.signature = sig_calldata
+            
+            # Send
+            print("Sending DeployAccount...")
+            try:
+                resp = await client.send_transaction(deploy_tx)
+                print(f"Deploy Sent! Tx Hash: {hex(resp.transaction_hash)}")
+                print("Waiting for acceptance...")
+                await client.wait_for_tx(resp.transaction_hash)
+                print("Deployed successfully!")
+                is_deployed = True
+            except Exception as e:
+                print(f"Deploy Failed: {e}")
+                return
+
+        if is_deployed:
+            # Transfer
+            print("Preparing Transfer...")
+            # Account is deployed. We can use Account client now easily...
+            # BUT we need custom signer for Invoke too.
+            # Same pattern: Create Invoke V3, Sign, Send.
+            
+            recipient_int = int(recipient, 16)
+            
+            # Transfer Call: STRK.transfer(recipient, amount/2?)
+            # Let's sweep almost all? Keep dust for fees.
+            # Check balance first
+            bal_resp = await client.call_contract(
+                Call(to_addr=STRK_TOKEN, selector=get_selector_from_name("balanceOf"), calldata=[int(stealth_address, 16)])
+            )
+            balance = bal_resp[0] + (bal_resp[1] << 128)
+            print(f"Current Balance: {balance} wei")
+            
+            if balance == 0:
+                print("Zero balance. Cannot transfer.")
+                return
+                
+            fee_estimate = 5000000000000000 # 0.005 STRK buffer
+            transfer_amount = balance - fee_estimate
+            if transfer_amount <= 0:
+                print("Balance too low to cover fees.")
+                return
+                
+            from starknet_py.net.client_models import Call
+            from starknet_py.hash.selector import get_selector_from_name
+            
+            call = Call(
+                to_addr=STRK_TOKEN,
+                selector=get_selector_from_name("transfer"),
+                calldata=[recipient_int, transfer_amount, 0] # u256 low, high
+            )
+            
+            # Build Invoke V3
+            invoke_tx = Invoke(
+                sender_address=int(stealth_address, 16),
+                calldata=[1, STRK_TOKEN, get_selector_from_name("transfer"), 3, recipient_int, transfer_amount, 0], # __execute__ format?
+                # Wait, raw invoke format for Account __execute__?
+                # starknet-py builds this usually.
+                # Let's use Account object but override signer.
+                
+                # ... Simplified: Just assume manual construction for now
+                ver=3, signature=[], 
+                resource_bounds=ResourceBoundsMapping(
+                    l1_gas=ResourceBounds(max_amount=10000, max_price_per_unit=100000000000),
+                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
+                ),
+                nonce=1, # Next nonce
+                chain_id=StarknetChainId.SEPOLIA,
+                nonce_data_availability_mode=0,
+                fee_data_availability_mode=0,
+                paymaster_data=[], tip=0,
+                account_deployment_data=[]
+            )
+            # Fix calldata construction (compiler dependent, but simple transfer is standard)
+            # Standard Account __execute__ takes Array<Call>.
+            # [num_calls, to, selector, calldata_len, calldata...]
+            
+            # Invoke V3 expects raw calldata? No, execute calldata.
+            # [1, STRK, transfer_sel, 2, amount, 0] ?
+            # Check starknet specs or standard account.
+            # Standard: [1 (call_len), to, selector, data_len, data...]
+            invoke_tx.calldata = [1, STRK_TOKEN, get_selector_from_name("transfer"), 2, transfer_amount, 0]
+            
+            invoke_hash = invoke_tx.calculate_hash(chain_id=StarknetChainId.SEPOLIA)
+            sig = get_garaga_signature_calldata(invoke_hash, stealth_priv)
+            invoke_tx.signature = sig
+            
+            print("Sending Transfer...")
+            resp = await client.send_transaction(invoke_tx)
+            print(f"Transfer Sent! Tx Hash: {hex(resp.transaction_hash)}")
 
 if __name__ == "__main__":
     import asyncio

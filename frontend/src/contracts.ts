@@ -264,6 +264,6 @@ export function computeStealthAccountAddress(stealthPub: Point): string {
         salt,
         classHash,
         constructorCalldata,
-        CONTRACTS.UDC // Deployer is UDC for standard deployment
+        0 // Deployer is 0 for counterfactual deploy_account
     );
 }
