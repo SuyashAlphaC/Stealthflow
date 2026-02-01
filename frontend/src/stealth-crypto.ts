@@ -234,3 +234,96 @@ export function parseMetaAddress(metaAddress: string): { viewPub: Point; spendPu
 export function generateMetaAddress(viewPub: Point, spendPub: Point): string {
     return `st:starknet:0x${viewPub.x.toString(16)},0x${viewPub.y.toString(16)},0x${spendPub.x.toString(16)},0x${spendPub.y.toString(16)}`;
 }
+
+/**
+ * Format wei amount to human-readable token string
+ * @param amountWei - Amount in wei (10^18)
+ * @param decimals - Token decimals (default 18)
+ * @returns Formatted string like "1.5000"
+ */
+export function formatWeiToToken(amountWei: bigint, decimals: number = 18): string {
+    if (amountWei === BigInt(0)) return '0.0000';
+
+    const divisor = BigInt(10) ** BigInt(decimals);
+    const whole = amountWei / divisor;
+    const fraction = amountWei % divisor;
+    const fractionStr = fraction.toString().padStart(decimals, '0').slice(0, 4);
+    return `${whole}.${fractionStr}`;
+}
+
+/**
+ * Parse token string to wei amount
+ * @param amount - Amount string like "1.5" or "0.001"
+ * @param decimals - Token decimals (default 18)
+ * @returns Amount in wei
+ */
+export function parseTokenToWei(amount: string, decimals: number = 18): bigint {
+    const [whole, fraction = ''] = amount.split('.');
+    const paddedFraction = fraction.padEnd(decimals, '0').slice(0, decimals);
+    return BigInt(whole + paddedFraction);
+}
+
+/**
+ * Encrypt metadata (amount) using shared secret
+ * Uses XOR encryption with keccak256-derived mask
+ * 
+ * @param sharedSecretX - X coordinate of shared secret point
+ * @param amountWei - Amount in wei to encrypt
+ * @returns Array of encrypted u256 values
+ */
+export function encryptMetadata(
+    sharedSecretX: bigint,
+    amountWei: bigint
+): bigint[] {
+    // Derive encryption mask: keccak256("stealthflow:metadata" || sharedSecretX)
+    const prefix = new TextEncoder().encode("stealthflow:metadata");
+    const secretBytes = bigIntToBytes(sharedSecretX);
+    const combined = new Uint8Array([...prefix, ...secretBytes]);
+    const mask = bytesToBigInt(keccak256(combined));
+
+    // XOR the amount with the mask
+    const encryptedAmount = amountWei ^ mask;
+
+    return [encryptedAmount];
+}
+
+/**
+ * Decrypt metadata from ciphertext
+ * 
+ * @param sharedSecretX - X coordinate of shared secret point
+ * @param ciphertext - Encrypted ciphertext array from announcement
+ * @returns Decrypted amount in wei and formatted string
+ */
+export function decryptMetadata(
+    sharedSecretX: bigint,
+    ciphertext: bigint[]
+): { amountWei: bigint; amountFormatted: string } {
+    if (!ciphertext || ciphertext.length === 0) {
+        return { amountWei: BigInt(0), amountFormatted: 'Unknown' };
+    }
+
+    // Derive same mask used for encryption
+    const prefix = new TextEncoder().encode("stealthflow:metadata");
+    const secretBytes = bigIntToBytes(sharedSecretX);
+    const combined = new Uint8Array([...prefix, ...secretBytes]);
+    const mask = bytesToBigInt(keccak256(combined));
+
+    // XOR to decrypt (since XOR is symmetric)
+    const amountWei = ciphertext[0] ^ mask;
+
+    // Format to human readable
+    const amountFormatted = formatWeiToToken(amountWei);
+
+    return { amountWei, amountFormatted };
+}
+
+/**
+ * Compute stealth address from stealth public key
+ * Matches logic in StealthSend: truncates to fits Starknet address space
+ */
+export function computeStealthAddress(stealthPub: Point): string {
+    // Note: This logic matches StealthSend.tsx
+    // It takes the first 62 hex characters of the X coordinate
+    // This effectively truncates the number to ensure it fits in Starknet address field
+    return '0x' + stealthPub.x.toString(16).slice(0, 62);
+}

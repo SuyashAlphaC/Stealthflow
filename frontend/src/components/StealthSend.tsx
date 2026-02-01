@@ -7,9 +7,12 @@ import {
     generateStealthAddress,
     parseMetaAddress,
     Point,
-    formatPoint
+    formatPoint,
+    pointMul,
+    encryptMetadata,
+    parseTokenToWei
 } from '../stealth-crypto';
-import { CONTRACTS, STEALTH_ANNOUNCER_ABI } from '../contracts';
+import { CONTRACTS, STEALTH_ANNOUNCER_ABI, computeStealthAccountAddress } from '../contracts';
 
 interface Props {
     onShowDebugger: (data: DebugData) => void;
@@ -36,6 +39,8 @@ export function StealthSend({ onShowDebugger }: Props) {
         stealthPub: Point;
         ephemeralPub: Point;
         viewTag: number;
+        sharedSecretX: bigint;
+        ephemeralPriv: bigint;
     } | null>(null);
 
     const parsedAddress = useMemo(() => {
@@ -55,10 +60,16 @@ export function StealthSend({ onShowDebugger }: Props) {
                 parsedAddress.spendPub
             );
 
+            // Compute shared secret for metadata encryption
+            // S = ephemeralPriv * viewPub
+            const sharedSecret = pointMul(result.ephemeralPriv, parsedAddress.viewPub);
+
             setGeneratedData({
                 stealthPub: result.stealthPub,
                 ephemeralPub: result.ephemeralPub,
-                viewTag: result.viewTag
+                viewTag: result.viewTag,
+                sharedSecretX: sharedSecret.x,
+                ephemeralPriv: result.ephemeralPriv
             });
 
             // Update debugger
@@ -67,7 +78,8 @@ export function StealthSend({ onShowDebugger }: Props) {
                 spendPub: parsedAddress.spendPub,
                 stealthPub: result.stealthPub,
                 ephemeralPub: result.ephemeralPub,
-                viewTag: result.viewTag
+                viewTag: result.viewTag,
+                sharedSecretX: sharedSecret.x
             });
 
             setIsGenerating(false);
@@ -96,13 +108,17 @@ export function StealthSend({ onShowDebugger }: Props) {
             // Get token address
             const tokenAddress = token === 'STRK' ? CONTRACTS.STRK : CONTRACTS.ETH;
 
-            // Convert amount to wei (18 decimals)
-            const amountWei = BigInt(Math.floor(parseFloat(amount) * 1e18));
+            // Convert amount to wei (18 decimals) using precise parsing
+            const amountWei = parseTokenToWei(amount);
             const [amountLow, amountHigh] = splitU256(amountWei);
 
-            // Compute stealth contract address (simplified - in production use UDC.computeAddress)
-            // For now we'll just transfer to a computed address based on stealth pubkey
-            const stealthAddressHex = '0x' + generatedData.stealthPub.x.toString(16).slice(0, 62);
+            // Encrypt the amount using shared secret
+            const encryptedAmounts = encryptMetadata(generatedData.sharedSecretX, amountWei);
+            const [cipherLow, cipherHigh] = splitU256(encryptedAmounts[0]);
+
+            // Compute stealth contract address (Deterministic Starknet Address)
+            // This ensures we can deploy the account later to claim funds
+            const stealthAddressHex = computeStealthAccountAddress(generatedData.stealthPub);
 
             // Execute multicall: transfer + announce
             const result = await account.execute([
@@ -112,16 +128,17 @@ export function StealthSend({ onShowDebugger }: Props) {
                     entrypoint: 'transfer',
                     calldata: [stealthAddressHex, amountLow, amountHigh]
                 },
-                // 2. Announce the payment
+                // 2. Announce the payment with encrypted metadata
                 {
                     contractAddress: CONTRACTS.STEALTH_ANNOUNCER,
                     entrypoint: 'announce',
                     calldata: [
                         '1', '0', // scheme_id u256 (low, high)
-                        '2', // array length (2 u256 elements for x, y)
+                        '2', // ephemeral_pubkey array length (2 u256 elements)
                         ephXLow, ephXHigh, // ephemeral_x as u256
                         ephYLow, ephYHigh, // ephemeral_y as u256
-                        '0', // empty ciphertext array length
+                        '1', // ciphertext array length (1 encrypted u256)
+                        cipherLow, cipherHigh, // encrypted amount as u256
                         generatedData.viewTag.toString()
                     ]
                 }

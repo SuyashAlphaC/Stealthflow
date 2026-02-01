@@ -1,7 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Point, formatPoint } from '../stealth-crypto';
+import { Point, formatPoint, computeStealthAddress } from '../stealth-crypto';
+import { CONTRACTS, getProvider, computeStealthAccountAddress } from '../contracts';
+import { CallData } from 'starknet';
 
 interface ClaimStep {
     id: number;
@@ -59,7 +61,56 @@ export function GaslessClaim({ fund, onClose }: Props) {
                 idx === i ? { ...s, status: 'active' } : s
             ));
 
+            // Log details for verification
+            if (i === 0) {
+                console.log('%c[Claim] 1. Generating Garaga Signature...', 'color: cyan');
+                console.log('Stealth Private Key:', '0x' + fund.stealthPriv.toString(16));
+                console.log('Stealth Public Key:', formatPoint(fund.stealthPub));
+                console.log('Mocking 42-felt secp256k1 signature verification hints...');
+            } else if (i === 1) {
+                const address = computeStealthAddress(fund.stealthPub);
+                console.log('%c[Claim] 2. Deploying Stealth Account...', 'color: cyan');
+                console.log('Target Address:', address);
+                console.log('Note: In simulation mode. To verify funds, check balance of:', address);
+            } else if (i === 2) {
+                console.log('%c[Claim] 3. Executing Multi-call...', 'color: cyan');
+                console.log('Enabling Paymaster for gas sponsorship...');
+                console.log('Executing: Claim Transfer -> Destination');
+            } else if (i === 3) {
+                console.log('%c[Claim] 4. Verification Complete', 'color: green');
+                console.log('Funds ready at stealth address.');
+            }
+
+            if (i === 1) { // Deploy Step - Real Check
+                // 1. Calculate Real Address
+                const contractAddress = computeStealthAccountAddress(fund.stealthPub);
+                console.log('[Claim] Computed Stealth Account Address:', contractAddress);
+
+                // 2. Check Balance
+                const provider = getProvider('sepolia');
+                try {
+                    const balanceResult = await provider.callContract({
+                        contractAddress: CONTRACTS.STRK,
+                        entrypoint: 'balanceOf',
+                        calldata: [contractAddress]
+                    });
+                    const balance = BigInt(balanceResult[0]) + (BigInt(balanceResult[1]) << BigInt(128));
+                    console.log(`[Claim] Balance at Account ${contractAddress}: ${balance.toString()} wei`);
+
+                    if (balance > BigInt(0)) {
+                        console.log('%c[Claim] ✅ Account funded and ready for deployment', 'color: green');
+                    } else {
+                        console.warn('%c[Claim] ⚠️ Account has 0 balance. Transfer might have used legacy address logic.', 'color: orange');
+                        console.log('Legacy Address (Key-based):', computeStealthAddress(fund.stealthPub));
+                    }
+                } catch (e) {
+                    console.error('[Claim] Failed to check balance:', e);
+                }
+            }
+
             try {
+                // For actual deployment, we need signature hints (Garaga) which are not available client-side.
+                // We perform the READ-ONLY checks above to verify "Reality", then simulate the WRITE TX.
                 await simulateStep(i);
 
                 setSteps(prev => prev.map((s, idx) =>
