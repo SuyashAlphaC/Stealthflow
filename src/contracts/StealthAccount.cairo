@@ -11,6 +11,10 @@ pub mod StealthAccount {
         verify_secp256k1_signature, Secp256k1PublicKey, SECP256K1_CURVE_ID
     };
 
+    // SRC-5 Interface IDs
+    const ISRC5_ID: felt252 = 0x3f918d17e5ee77373b56385708f855659a07f75997f365cf87748628532a055;
+    const ACCOUNT_INTERFACE_ID: felt252 = 0x2ceccef7f994940b3962a6c67e0ba4fcd37df7d131417c604f91e03caecc1cd;
+
     #[storage]
     struct Storage {
         public_key_x: u256,
@@ -29,6 +33,14 @@ pub mod StealthAccount {
             self.validate_transaction()
         }
 
+        /// Execute a list of calls.
+        /// 
+        /// # Paymaster Reimbursement Pattern
+        /// When using a Paymaster, the final call in `calls` should be:
+        /// `token.transfer(paymaster_address, reimbursement_amount)`
+        /// 
+        /// This ensures the Paymaster is reimbursed atomically within the same transaction.
+        /// If any call fails, the entire transaction reverts, preventing griefing.
         fn __execute__(ref self: ContractState, calls: Array<Call>) -> Array<Span<felt252>> {
             let mut results = ArrayTrait::new();
             let mut i = 0;
@@ -50,6 +62,14 @@ pub mod StealthAccount {
 
         fn __validate_declare__(self: @ContractState, class_hash: felt252) -> felt252 {
             self.validate_transaction()
+        }
+    }
+
+    // SRC-5 Interface Detection
+    #[abi(embed_v0)]
+    impl SRC5Impl of stealth_flow::interfaces::ISRC5<ContractState> {
+        fn supports_interface(self: @ContractState, interface_id: felt252) -> bool {
+            interface_id == ISRC5_ID || interface_id == ACCOUNT_INTERFACE_ID
         }
     }
 

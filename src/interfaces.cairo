@@ -30,3 +30,8 @@ pub struct PragmaPricesResponse {
 pub trait IPragmaOracle<TContractState> {
     fn get_data_median(self: @TContractState, pair_id: felt252) -> PragmaPricesResponse;
 }
+
+#[starknet::interface]
+pub trait ISRC5<TContractState> {
+    fn supports_interface(self: @TContractState, interface_id: felt252) -> bool;
+}
