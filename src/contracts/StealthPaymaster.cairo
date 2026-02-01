@@ -20,6 +20,8 @@ pub mod StealthPaymaster {
         token_pair_ids: Map<ContractAddress, felt252>, // Token -> Oracle Pair ID
         owner: ContractAddress,
         oracle_address: ContractAddress,
+        // Pending reimbursement tracking: (token, account) -> expected_amount
+        pending_reimbursements: Map<(ContractAddress, ContractAddress), u256>,
     }
 
     #[constructor]
@@ -50,8 +52,21 @@ pub mod StealthPaymaster {
     // Internal implementation
     #[generate_trait]
     impl InternalFunctions of InternalFunctionsTrait {
+        /// Power of 10 helper for decimal scaling
+        fn pow_10(exp: u256) -> u256 {
+            let mut result: u256 = 1;
+            let mut i: u256 = 0;
+            loop {
+                if i >= exp { break; }
+                result = result * 10;
+                i += 1;
+            };
+            result
+        }
+
         /// Calculate required token amount to cover gas fees.
         /// Uses Pragma Oracle for real-time price data with 10% safety margin.
+        /// Properly normalizes decimals between different price feeds.
         fn calculate_required_fee_internal(
             self: @ContractState,
             max_fee_strk: u256,
@@ -61,18 +76,23 @@ pub mod StealthPaymaster {
                 contract_address: self.oracle_address.read() 
             };
             
-            // Get STRK/USD price
+            // Get STRK/USD price with decimals
             let strk_price_response = oracle.get_data_median(STRK_USD_PAIR_ID);
             let strk_price: u256 = strk_price_response.price.into();
+            let strk_decimals: u256 = strk_price_response.decimals.into();
             
-            // Get Token/USD price
+            // Get Token/USD price with decimals
             let token_pair_id = self.token_pair_ids.read(token_address);
             let token_price_response = oracle.get_data_median(token_pair_id);
             let token_price: u256 = token_price_response.price.into();
+            let token_decimals: u256 = token_price_response.decimals.into();
             
-            // Calculate: required_tokens = max_fee_strk * strk_price / token_price
-            let strk_value_usd = max_fee_strk * strk_price;
-            let required_tokens = strk_value_usd / token_price;
+            // Normalize decimals for cross-price conversion:
+            // required_tokens = max_fee * (strk_price / 10^strk_dec) / (token_price / 10^token_dec)
+            //                 = max_fee * strk_price * 10^token_dec / (token_price * 10^strk_dec)
+            let numerator = max_fee_strk * strk_price * Self::pow_10(token_decimals);
+            let denominator = token_price * Self::pow_10(strk_decimals);
+            let required_tokens = numerator / denominator;
             
             // Apply 10% safety margin
             let required_with_margin = required_tokens * SAFETY_MARGIN_BPS / BPS_DENOMINATOR;
@@ -137,6 +157,54 @@ pub mod StealthPaymaster {
         let token_dispatcher = IERC20Dispatcher { contract_address: token_address };
         let this_contract = get_contract_address();
         token_dispatcher.balance_of(this_contract)
+    }
+    
+    /// Record expected reimbursement before execution.
+    /// This must be called before the stealth account executes its transaction.
+    #[external(v0)]
+    fn record_pending_reimbursement(
+        ref self: ContractState,
+        token_address: ContractAddress,
+        account_contract_address: ContractAddress,
+        expected_amount: u256
+    ) {
+        let caller = get_caller_address();
+        assert(caller == self.owner.read(), 'Not owner');
+        self.pending_reimbursements.write((token_address, account_contract_address), expected_amount);
+    }
+    
+    /// Verify reimbursement came FROM the specific account via transferFrom.
+    /// This guarantees the source since only account_contract_address can authorize.
+    #[external(v0)]
+    fn verify_strict_reimbursement(
+        ref self: ContractState,
+        token_address: ContractAddress,
+        account_contract_address: ContractAddress
+    ) {
+        let expected = self.pending_reimbursements.read((token_address, account_contract_address));
+        assert(expected > 0, 'No pending reimbursement');
+        
+        // Clear pending to prevent replay attacks
+        self.pending_reimbursements.write((token_address, account_contract_address), 0);
+        
+        // Use transferFrom pattern: paymaster pulls from account
+        // This guarantees the source is account_contract_address
+        // The account must have approved this contract beforehand
+        let token = IERC20Dispatcher { contract_address: token_address };
+        let this_contract = get_contract_address();
+        
+        let success = token.transfer_from(account_contract_address, this_contract, expected);
+        assert(success, 'Reimbursement transfer failed');
+    }
+    
+    /// Check pending reimbursement amount for a token/account pair.
+    #[external(v0)]
+    fn get_pending_reimbursement(
+        self: @ContractState,
+        token_address: ContractAddress,
+        account_contract_address: ContractAddress
+    ) -> u256 {
+        self.pending_reimbursements.read((token_address, account_contract_address))
     }
 
     // --- Admin Functions ---

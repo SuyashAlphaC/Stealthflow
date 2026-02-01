@@ -9,6 +9,7 @@ import {
     getPublicKey,
     formatPoint
 } from '../stealth-crypto';
+import { parseEphemeralPubkeyFromEvent, AnnouncementEvent } from '../eventScanner';
 
 interface ScanEntry {
     id: string;
@@ -97,6 +98,64 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
                 amount: (Math.random() * 10).toFixed(4),
                 token: ['ETH', 'STRK', 'USDC'][Math.floor(Math.random() * 3)],
                 txHash: mockTxHash
+            };
+
+            setDiscoveredFunds(prev => [...prev, fund]);
+            onFundDiscovered(fund);
+
+            setScanStats(prev => ({
+                ...prev,
+                total: prev.total + 1,
+                matches: prev.matches + 1
+            }));
+        } else {
+            setScanStats(prev => ({
+                ...prev,
+                total: prev.total + 1,
+                filtered: prev.filtered + 1
+            }));
+        }
+
+        setScanLog(prev => [entry, ...prev].slice(0, 50));
+    }, [viewPriv, spendPub, spendPriv, onFundDiscovered]);
+
+    // Process real contract Announcement events
+    const processContractEvent = useCallback((event: AnnouncementEvent) => {
+        if (!viewPriv || !spendPub || !spendPriv) return;
+
+        const entry: ScanEntry = {
+            id: event.txHash + '-' + event.blockNumber,
+            timestamp: new Date(),
+            viewTag: event.viewTag,
+            ephemeralPub: event.ephemeralPubkey, // Already parsed via parseEphemeralPubkeyFromEvent
+            isMatch: false,
+            schemeId: Number(event.schemeId),
+            txHash: event.txHash,
+            blockNumber: event.blockNumber
+        };
+
+        // Check if this matches our viewing key
+        const result = checkStealthPayment(
+            viewPriv,
+            spendPub,
+            event.ephemeralPubkey,
+            event.viewTag
+        );
+
+        if (result !== null) {
+            entry.isMatch = true;
+
+            // Derive stealth private key
+            const stealthPriv = computeStealthPrivKey(spendPriv, result);
+            const stealthPub = getPublicKey(stealthPriv);
+
+            const fund: DiscoveredFund = {
+                stealthPub,
+                stealthPriv,
+                ephemeralPub: event.ephemeralPubkey,
+                amount: 'Unknown', // Would need to query balance
+                token: 'UNKNOWN',  // Would need to decode ciphertext or check balances
+                txHash: event.txHash
             };
 
             setDiscoveredFunds(prev => [...prev, fund]);
