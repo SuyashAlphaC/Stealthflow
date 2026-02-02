@@ -18,6 +18,7 @@ from starknet_py.contract import Contract
 from starknet_py.hash.utils import compute_hash_on_elements
 from starknet_py.hash.address import compute_address
 import hashlib
+import dataclasses
 
 # secp256k1 curve parameters
 P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
@@ -65,12 +66,8 @@ def get_garaga_signature_calldata(msg_hash, priv_key):
         s = N - s
         v = 1 - v
         
-    sig = ECDSASignature(r, s, v, None, None, msg_hash, CurveID.SECP256K1)
-    # Need Public Key in sig? 
-    # Garaga might need public key X, Y.
     pub = point_mul(priv_key, (G_X, G_Y))
-    sig.px = pub[0]
-    sig.py = pub[1]
+    sig = ECDSASignature(r, s, v, pub[0], pub[1], msg_hash, CurveID.SECP256K1)
     
     return list(sig.serialize_with_hints())
 
@@ -245,7 +242,7 @@ sncast deploy --network sepolia \\
         print("EXECUTING ON-CHAIN CLAIM (Deploy + Transfer)")
         print("=" * 70)
         
-        client = FullNodeClient(node_url="https://starknet-sepolia.public.blastapi.io/rpc/v0_7")
+        client = FullNodeClient(node_url="https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_10/LfKXerIDAvp3ToDzzjfD8")
         
         # 1. Check if already deployed
         # If deployed, just transfer. If not, deploy_account.
@@ -279,7 +276,7 @@ sncast deploy --network sepolia \\
             # 4. Sign Hash -> Garaga Calldata
             # 5. Send Raw
             
-            from starknet_py.net.models import StarknetChainId, Invoke, DeployAccount
+            from starknet_py.net.models.transaction import InvokeV3, DeployAccountV3
             from starknet_py.net.client_models import ResourceBounds, ResourceBoundsMapping
             
             # DeployAccount params
@@ -293,22 +290,18 @@ sncast deploy --network sepolia \\
             
             salt = stealth_pub[0] % (2**251)
             
-            deploy_tx = DeployAccount(
+            deploy_tx = DeployAccountV3(
                 class_hash=STEALTH_ACCOUNT_CLASS_HASH,
                 contract_address_salt=salt,
                 constructor_calldata=constructor_calldata,
                 version=3,
                 resource_bounds=ResourceBoundsMapping(
                     l1_gas=ResourceBounds(max_amount=20000, max_price_per_unit=100000000000), # Adjust price dynamically ideally
-                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
+                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0),
+                    l1_data_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
                 ),
                 nonce=0,
-                chain_id=StarknetChainId.SEPOLIA,
-                signature=[], # Will fill
-                paymaster_data=[], # Self-pay
-                nonce_data_availability_mode=0,
-                fee_data_availability_mode=0,
-                tip=0
+                signature=[],
             )
 
             # We need to set the STRK token as fee token.
@@ -332,12 +325,12 @@ sncast deploy --network sepolia \\
             
             # Sign
             sig_calldata = get_garaga_signature_calldata(deploy_hash, stealth_priv)
-            deploy_tx.signature = sig_calldata
+            deploy_tx = dataclasses.replace(deploy_tx, signature=sig_calldata)
             
             # Send
             print("Sending DeployAccount...")
             try:
-                resp = await client.send_transaction(deploy_tx)
+                resp = await client.deploy_account(deploy_tx)
                 print(f"Deploy Sent! Tx Hash: {hex(resp.transaction_hash)}")
                 print("Waiting for acceptance...")
                 await client.wait_for_tx(resp.transaction_hash)
@@ -384,25 +377,17 @@ sncast deploy --network sepolia \\
                 calldata=[recipient_int, transfer_amount, 0] # u256 low, high
             )
             
-            # Build Invoke V3
-            invoke_tx = Invoke(
+            # Build InvokeV3
+            invoke_tx = InvokeV3(
                 sender_address=int(stealth_address, 16),
-                calldata=[1, STRK_TOKEN, get_selector_from_name("transfer"), 3, recipient_int, transfer_amount, 0], # __execute__ format?
-                # Wait, raw invoke format for Account __execute__?
-                # starknet-py builds this usually.
-                # Let's use Account object but override signer.
-                
-                # ... Simplified: Just assume manual construction for now
-                ver=3, signature=[], 
+                calldata=[1, STRK_TOKEN, get_selector_from_name("transfer"), 3, recipient_int, transfer_amount, 0],
+                version=3, signature=[], 
                 resource_bounds=ResourceBoundsMapping(
                     l1_gas=ResourceBounds(max_amount=10000, max_price_per_unit=100000000000),
-                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
+                    l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0),
+                    l1_data_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
                 ),
                 nonce=1, # Next nonce
-                chain_id=StarknetChainId.SEPOLIA,
-                nonce_data_availability_mode=0,
-                fee_data_availability_mode=0,
-                paymaster_data=[], tip=0,
                 account_deployment_data=[]
             )
             # Fix calldata construction (compiler dependent, but simple transfer is standard)
@@ -413,11 +398,13 @@ sncast deploy --network sepolia \\
             # [1, STRK, transfer_sel, 2, amount, 0] ?
             # Check starknet specs or standard account.
             # Standard: [1 (call_len), to, selector, data_len, data...]
-            invoke_tx.calldata = [1, STRK_TOKEN, get_selector_from_name("transfer"), 2, transfer_amount, 0]
+            # Fix calldata construction
+            new_calldata = [1, STRK_TOKEN, get_selector_from_name("transfer"), 2, transfer_amount, 0]
+            invoke_tx = dataclasses.replace(invoke_tx, calldata=new_calldata)
             
             invoke_hash = invoke_tx.calculate_hash(chain_id=StarknetChainId.SEPOLIA)
             sig = get_garaga_signature_calldata(invoke_hash, stealth_priv)
-            invoke_tx.signature = sig
+            invoke_tx = dataclasses.replace(invoke_tx, signature=sig)
             
             print("Sending Transfer...")
             resp = await client.send_transaction(invoke_tx)

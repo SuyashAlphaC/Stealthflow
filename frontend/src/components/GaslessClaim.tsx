@@ -130,6 +130,23 @@ export function GaslessClaim({ fund, onClose }: Props) {
                     }
 
                     console.log('[Claim] Backend Logs:', result.logs);
+
+                    if (result.deployTxHash) {
+                        console.log('%c[Claim] 🚀 Deploy TX:', 'color: cyan', result.deployTxHash);
+                        // Update step 2 to show it's done with TX
+                        setSteps(prev => prev.map(s =>
+                            s.id === 2 ? { ...s, detail: `Deployed: ${result.deployTxHash.slice(0, 10)}...` } : s
+                        ));
+                    }
+
+                    if (result.transferTxHash) {
+                        console.log('%c[Claim] 💸 Transfer TX:', 'color: green', result.transferTxHash);
+                        // Update step 3
+                        setSteps(prev => prev.map(s =>
+                            s.id === 3 ? { ...s, detail: `Transfer: ${result.transferTxHash.slice(0, 10)}...` } : s
+                        ));
+                    }
+
                 } else {
                     // Short delay for UI
                     await new Promise(r => setTimeout(r, 1000));
