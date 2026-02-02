@@ -35,3 +35,15 @@ pub trait IPragmaOracle<TContractState> {
 pub trait ISRC5<TContractState> {
     fn supports_interface(self: @TContractState, interface_id: felt252) -> bool;
 }
+
+#[starknet::interface]
+pub trait IStealthAccountAtomic<TContractState> {
+    fn process_atomic_claim(
+        ref self: TContractState,
+        signature: Array<felt252>,
+        token: ContractAddress,
+        recipient: ContractAddress,
+        amount: u256,
+        fee: u256
+    );
+}

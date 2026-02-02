@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
+
 """
-StealthFlow Gasless Claim Script
-
-Implements true gasless claims where a backend sponsor account pays for:
-1. Deploying the StealthAccount via UDC
-2. The stealth account then transfers funds to recipient
-
-The stealth account reimburses the sponsor from its balance.
-
-Usage:
-    python3 gasless_claim.py --stealth-priv <STEALTH_PRIV> --to <RECIPIENT>
+StealthFlow Gasless Claim Script (Atomic)
+- Implements atomic gasless claim via Sponsor MultiCall.
+- Sponsor pays fees for Deployment + Transfer in a single transaction.
+- Uses Garaga ECDSA signatures for authorization.
 """
 
 import os
@@ -17,37 +12,29 @@ import sys
 import asyncio
 import argparse
 import dataclasses
+import random
+
 from starknet_py.net.full_node_client import FullNodeClient
 from starknet_py.net.account.account import Account
 from starknet_py.net.models import StarknetChainId
 from starknet_py.net.signer.stark_curve_signer import KeyPair, StarkCurveSigner
-from starknet_py.contract import Contract
 from starknet_py.hash.address import compute_address
 from starknet_py.net.client_models import Call, ResourceBounds, ResourceBoundsMapping
+from starknet_py.hash.selector import get_selector_from_name
+from poseidon_py.poseidon_hash import poseidon_hash_many
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Sepolia RPC - use Alchemy or other provider
-RPC_URL = os.environ.get("STARKNET_RPC_URL", "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_10/LfKXerIDAvp3ToDzzjfD8")
-
-# Stealth Account Class Hash (deployed on Sepolia)
-STEALTH_ACCOUNT_CLASS_HASH = 0x12cdffb7d81d52c38f0c7fa382ab698ccf50d69b7509080a8b3a656b106d003
-
-# STRK Token on Sepolia
+RPC_URL = os.environ.get("STARKNET_RPC_URL", "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/LfKXerIDAvp3ToDzzjfD8")
+STEALTH_ACCOUNT_CLASS_HASH = 0x331c518a72cfe1061da811efcb7ba2d98628ce9ac0c50a49d3b1c1d897d87e2
 STRK_TOKEN = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
+UDC_ADDRESS = 0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf
+GAS_REIMBURSEMENT = 10_000_000_000_000_000 # 0.01 STRK
 
-# Universal Deployer Contract (Sepolia)
-UDC_ADDRESS = 0x041a78e741e5af2fec34b637d19f86f528d2495b879f0bc15624d63d397b5d21
-
-# Backend Sponsor Account - must be funded with STRK
-# Set via environment variables for security
 SPONSOR_ADDRESS = int(os.environ.get("SPONSOR_ADDRESS", "0x0"), 16)
 SPONSOR_PRIVATE_KEY = int(os.environ.get("SPONSOR_PRIVATE_KEY", "0x0"), 16)
-
-# Gas cost estimate in STRK (0.01 STRK should be plenty)
-GAS_REIMBURSEMENT = 10_000_000_000_000_000  # 0.01 STRK
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECP256K1 UTILITIES
@@ -59,31 +46,25 @@ G_X = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
 G_Y = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
 
 def modinv(a, m):
-    if a < 0:
-        a = a % m
+    if a < 0: a = a % m
     g, x, _ = extended_gcd(a, m)
-    if g != 1:
-        raise Exception('Modular inverse does not exist')
+    if g != 1: raise Exception('Modular inverse does not exist')
     return x % m
 
 def extended_gcd(a, b):
-    if a == 0:
-        return b, 0, 1
+    if a == 0: return b, 0, 1
     gcd, x1, y1 = extended_gcd(b % a, a)
     return gcd, y1 - (b // a) * x1, x1
 
 def point_add(p1, p2):
-    if p1 is None:
-        return p2
-    if p2 is None:
-        return p1
+    if p1 is None: return p2
+    if p2 is None: return p1
     x1, y1 = p1
     x2, y2 = p2
     if x1 == x2:
         if y1 == y2:
             lam = (3 * x1 * x1) * modinv(2 * y1, P) % P
-        else:
-            return None
+        else: return None
     else:
         lam = (y2 - y1) * modinv(x2 - x1, P) % P
     x3 = (lam * lam - x1 - x2) % P
@@ -94,14 +75,12 @@ def point_mul(k, point):
     result = None
     addend = point
     while k:
-        if k & 1:
-            result = point_add(result, addend)
+        if k & 1: result = point_add(result, addend)
         addend = point_add(addend, addend)
         k >>= 1
     return result
 
 def derive_public_key(priv_key: int) -> tuple:
-    """Derive secp256k1 public key from private key"""
     return point_mul(priv_key, (G_X, G_Y))
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -111,7 +90,6 @@ def derive_public_key(priv_key: int) -> tuple:
 def get_garaga_signature_calldata(msg_hash: int, priv_key: int) -> list:
     """Generate Garaga signature hints"""
     from garaga.starknet.tests_and_calldata_generators.signatures import ECDSASignature, CurveID
-    import random
     
     k = random.randrange(1, N)
     kinv = pow(k, N - 2, N)
@@ -126,286 +104,186 @@ def get_garaga_signature_calldata(msg_hash: int, priv_key: int) -> list:
     
     pub = derive_public_key(priv_key)
     sig = ECDSASignature(r, s, v, pub[0], pub[1], msg_hash, CurveID.SECP256K1)
-    return list(sig.serialize_with_hints())
+    
+    # We serialize manually or use serialize_with_hints. 
+    # Cairo expects: rx(4), s(2), v(1), z(2), hints...
+    # z is at offset 7-8.
+    serialized = list(sig.serialize_with_hints())
+    return serialized
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEALTH ADDRESS COMPUTATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def compute_stealth_address(stealth_pub: tuple) -> str:
-    """Compute the stealth account address from the public key"""
     x_low = stealth_pub[0] & ((1 << 128) - 1)
     x_high = stealth_pub[0] >> 128
     y_low = stealth_pub[1] & ((1 << 128) - 1)
     y_high = stealth_pub[1] >> 128
-    constructor_calldata = [x_low, x_high, y_low, y_high]
+    calldata = [x_low, x_high, y_low, y_high]
     
     salt = stealth_pub[0] % (2**251)
-    
+    # UDC deterministic address: deployer=0, salt, class_hash, calldata
     address = compute_address(
         salt=salt,
         class_hash=STEALTH_ACCOUNT_CLASS_HASH,
-        constructor_calldata=constructor_calldata,
+        constructor_calldata=calldata,
         deployer_address=0
     )
     return hex(address)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# MAIN GASLESS CLAIM FLOW
+# MAIN GASLESS CLAIM FLOW (ATOMIC)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def gasless_claim(stealth_priv: int, recipient: str):
-    """
-    Execute gasless claim:
-    1. Sponsor deploys StealthAccount via UDC
-    2. Stealth account transfers to recipient
-    3. Stealth account reimburses sponsor
-    """
-    
-    print("=" * 70)
-    print("STEALTHFLOW GASLESS CLAIM")
-    print("=" * 70)
-    
-    # Derive stealth public key
-    stealth_pub = derive_public_key(stealth_priv)
-    stealth_address = compute_stealth_address(stealth_pub)
-    
-    print(f"\n[Stealth Account]")
-    print(f"  Address: {stealth_address}")
-    print(f"  Recipient: {recipient}")
-    
-    # Connect to RPC
+async def get_application_nonce(client, address: int) -> int:
+    """Read application-level nonce (sn_keccak('nonce')) from storage"""
+    try:
+        class_hash = await client.get_class_hash_at(address)
+        if not class_hash: return 0
+        nonce = await client.get_storage_at(address, get_selector_from_name("nonce"), "latest")
+        return nonce
+    except:
+        return 0
+
+async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int):
     client = FullNodeClient(node_url=RPC_URL)
     
-    # Check if sponsor is configured
     if SPONSOR_ADDRESS == 0 or SPONSOR_PRIVATE_KEY == 0:
-        print("\n❌ ERROR: Sponsor account not configured!")
-        print("   Set SPONSOR_ADDRESS and SPONSOR_PRIVATE_KEY env vars")
+        print("❌ Sponsor config missing")
         return False
-    
-    # Create sponsor account
-    sponsor_signer = StarkCurveSigner(
-        account_address=SPONSOR_ADDRESS,
-        key_pair=KeyPair.from_private_key(SPONSOR_PRIVATE_KEY),
-        chain_id=StarknetChainId.SEPOLIA
-    )
+
     sponsor_account = Account(
-        address=SPONSOR_ADDRESS,
         client=client,
-        signer=sponsor_signer,
+        address=SPONSOR_ADDRESS,
+        key_pair=KeyPair.from_private_key(SPONSOR_PRIVATE_KEY),
         chain=StarknetChainId.SEPOLIA
     )
+
+    stealth_pub = derive_public_key(stealth_priv)
+    stealth_address_hex = compute_stealth_address(stealth_pub)
+    stealth_address_int = int(stealth_address_hex, 16)
+
+    print(f"\n[Stealth Account] {stealth_address_hex}")
     
-    print(f"\n[Sponsor Account]")
-    print(f"  Address: {hex(SPONSOR_ADDRESS)}")
-    
-    # 1. Check stealth account balance
-    from starknet_py.hash.selector import get_selector_from_name
-    
-    bal_resp = await client.call_contract(
-        Call(
-            to_addr=STRK_TOKEN,
-            selector=get_selector_from_name("balanceOf"),
-            calldata=[int(stealth_address, 16)]
-        )
-    )
-    balance = bal_resp[0] + (bal_resp[1] << 128)
-    print(f"\n[Stealth Balance]")
-    print(f"  {balance / 10**18:.6f} STRK")
-    
+    # Check Balance
+    balance = 0
+    try:
+        bal_resp = await client.call_contract(Call(
+            to_addr=STRK_TOKEN, selector=get_selector_from_name("balanceOf"), calldata=[stealth_address_int]
+        ))
+        balance = bal_resp[0]
+        print(f"  Balance: {balance/1e18} STRK")
+    except:
+        print("  Balance: 0 (or error)")
+
     if balance == 0:
-        print("\n❌ No funds to claim!")
-        return False
-    
-    # 2. Check if already deployed
+        if expected_amount > 0:
+            print("❌ No funds to claim!")
+            return False
+
+    # Check Deployed
     is_deployed = False
     try:
-        class_hash = await client.get_class_hash_at(stealth_address)
-        if class_hash:
-            is_deployed = True
-            print("\n✅ Account already deployed")
-    except:
-        print("\n📦 Account not deployed - will deploy via UDC")
+        if await client.get_class_hash_at(stealth_address_int): is_deployed = True
+    except: pass
     
-    # 3. Deploy via UDC if needed (using SPONSOR account)
-    if not is_deployed:
-        print("\n[Step 1] Deploying Stealth Account via UDC...")
+    nonce = await get_application_nonce(client, stealth_address_int)
+    print(f"  Deployed: {is_deployed}, Nonce: {nonce}")
+
+    # Prepare Data
+    contract_fee = GAS_REIMBURSEMENT
+    tx_amount = expected_amount if expected_amount > 0 else (balance - contract_fee)
+    
+    if tx_amount <= 0:
+        print("❌ Amount <= 0 (insufficient for gas)")
+        return False
         
-        # Prepare constructor calldata
+    recipient_int = int(recipient, 16)
+    
+    # Hash Params (Poseidon)
+    amount_low = tx_amount & ((1 << 128) - 1)
+    amount_high = tx_amount >> 128
+    fee_low = contract_fee & ((1 << 128) - 1)
+    fee_high = contract_fee >> 128
+    
+    msg_hash = poseidon_hash_many([
+        recipient_int,
+        amount_low, amount_high,
+        fee_low, fee_high,
+        STRK_TOKEN,
+        nonce
+    ])
+    
+    print(f"  Msg Hash: {hex(msg_hash)}")
+    
+    # Sign (User Action)
+    signature_data = get_garaga_signature_calldata(msg_hash, stealth_priv)
+    
+    # Build Sponsor Calls
+    calls = []
+    
+    if not is_deployed:
+        print("  📝 Adding UDC Deploy")
         x_low = stealth_pub[0] & ((1 << 128) - 1)
         x_high = stealth_pub[0] >> 128
         y_low = stealth_pub[1] & ((1 << 128) - 1)
         y_high = stealth_pub[1] >> 128
-        
         salt = stealth_pub[0] % (2**251)
         
-        # UDC.deployContract call
-        # Calldata: class_hash, salt, unique (true=1), constructor_calldata_len, ...constructor_calldata
-        deploy_call = Call(
+        calls.append(Call(
             to_addr=UDC_ADDRESS,
             selector=get_selector_from_name("deployContract"),
-            calldata=[
-                STEALTH_ACCOUNT_CLASS_HASH,  # class_hash
-                salt,                         # salt
-                0,                            # unique = false (deterministic address)
-                4,                            # calldata_len
-                x_low, x_high, y_low, y_high  # constructor args
-            ]
-        )
-        
-        try:
-            # Execute via sponsor account
-            tx = await sponsor_account.execute_v3(
-                calls=[deploy_call],
-                auto_estimate=True
-            )
-            print(f"  Deploy TX: {hex(tx.transaction_hash)}")
-            
-            print("  Waiting for confirmation...")
-            await client.wait_for_tx(tx.transaction_hash)
-            print("  ✅ Deployed!")
-            is_deployed = True
-        except Exception as e:
-            print(f"  ❌ Deploy failed: {e}")
-            return False
-    
-    # 4. Transfer from stealth account to recipient
-    if is_deployed:
-        print("\n[Step 2] Transferring funds to recipient...")
-        
-        recipient_int = int(recipient, 16)
-        
-        # Calculate transfer amount (balance - gas reimbursement)
-        transfer_amount = balance - GAS_REIMBURSEMENT
-        if transfer_amount <= 0:
-            print(f"  ❌ Balance too low to cover gas reimbursement")
-            return False
-        
-        print(f"  Transfer: {transfer_amount / 10**18:.6f} STRK")
-        print(f"  Gas Reimbursement: {GAS_REIMBURSEMENT / 10**18:.6f} STRK")
-        
-        # Now we need to send an invoke from the stealth account
-        # The stealth account uses Garaga secp256k1 signatures
-        # We need to manually construct and sign the transaction
-        
-        from starknet_py.net.models.transaction import InvokeV3
-        
-        # Build calldata for __execute__
-        # Format: [call_count, to, selector, data_len, data...]
-        transfer_selector = get_selector_from_name("transfer")
-        calldata = [
-            1,                    # 1 call
-            STRK_TOKEN,           # to
-            transfer_selector,    # selector
-            3,                    # calldata len (recipient, amount_low, amount_high)
-            recipient_int,        # recipient
-            transfer_amount & ((1 << 128) - 1),  # amount low
-            transfer_amount >> 128               # amount high
-        ]
-        
-        # Get current nonce
-        try:
-            nonce = await client.get_contract_nonce(stealth_address)
-        except:
-            nonce = 0
-        
-        invoke_tx = InvokeV3(
-            sender_address=int(stealth_address, 16),
-            calldata=calldata,
-            version=3,
-            signature=[],
-            resource_bounds=ResourceBoundsMapping(
-                l1_gas=ResourceBounds(max_amount=50000, max_price_per_unit=1000000000000),
-                l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0),
-                l1_data_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
-            ),
-            nonce=nonce,
-            account_deployment_data=[]
-        )
-        
-        # Calculate hash and sign with Garaga
-        invoke_hash = invoke_tx.calculate_hash(chain_id=StarknetChainId.SEPOLIA)
-        print(f"  Invoke TX Hash: {hex(invoke_hash)}")
-        
-        sig = get_garaga_signature_calldata(invoke_hash, stealth_priv)
-        invoke_tx = dataclasses.replace(invoke_tx, signature=sig)
-        
-        try:
-            resp = await client.send_transaction(invoke_tx)
-            print(f"  Transfer TX: {hex(resp.transaction_hash)}")
-            
-            print("  Waiting for confirmation...")
-            await client.wait_for_tx(resp.transaction_hash)
-            print("  ✅ Transfer complete!")
-        except Exception as e:
-            print(f"  ❌ Transfer failed: {e}")
-            return False
-    
-    # 5. Reimburse sponsor (stealth account pays sponsor)
-    if is_deployed and SPONSOR_ADDRESS != 0:
-        print("\n[Step 3] Reimbursing sponsor...")
-        
-        # Build reimbursement call
-        reimburse_selector = get_selector_from_name("transfer")
-        reimburse_calldata = [
-            1,
-            STRK_TOKEN,
-            reimburse_selector,
-            3,
-            SPONSOR_ADDRESS,
-            GAS_REIMBURSEMENT & ((1 << 128) - 1),
-            GAS_REIMBURSEMENT >> 128
-        ]
-        
-        try:
-            nonce = await client.get_contract_nonce(stealth_address)
-        except:
-            nonce = 1
-        
-        reimburse_tx = InvokeV3(
-            sender_address=int(stealth_address, 16),
-            calldata=reimburse_calldata,
-            version=3,
-            signature=[],
-            resource_bounds=ResourceBoundsMapping(
-                l1_gas=ResourceBounds(max_amount=20000, max_price_per_unit=1000000000000),
-                l2_gas=ResourceBounds(max_amount=0, max_price_per_unit=0),
-                l1_data_gas=ResourceBounds(max_amount=0, max_price_per_unit=0)
-            ),
-            nonce=nonce,
-            account_deployment_data=[]
-        )
-        
-        reimburse_hash = reimburse_tx.calculate_hash(chain_id=StarknetChainId.SEPOLIA)
-        sig = get_garaga_signature_calldata(reimburse_hash, stealth_priv)
-        reimburse_tx = dataclasses.replace(reimburse_tx, signature=sig)
-        
-        try:
-            resp = await client.send_transaction(reimburse_tx)
-            print(f"  Reimburse TX: {hex(resp.transaction_hash)}")
-            print("  ✅ Sponsor reimbursed!")
-        except Exception as e:
-            print(f"  ⚠️ Reimbursement failed (non-critical): {e}")
-    
-    print("\n" + "=" * 70)
-    print("✅ GASLESS CLAIM COMPLETE!")
-    print("=" * 70)
-    return True
+            calldata=[STEALTH_ACCOUNT_CLASS_HASH, salt, 0, 4, x_low, x_high, y_low, y_high]
+        ))
 
+    # Atomic Claim Call
+    # signature_len, sig..., token, recipient, amount_l, amount_h, fee_l, fee_h
+    atomic_calldata = [len(signature_data)] + signature_data + [
+        STRK_TOKEN, recipient_int, amount_low, amount_high, fee_low, fee_high
+    ]
+    
+    calls.append(Call(
+        to_addr=stealth_address_int,
+        selector=get_selector_from_name("process_atomic_claim"),
+        calldata=atomic_calldata
+    ))
+    
+    # Execute Sponsor TX
+    print(f"  🚀 Executing Atomic Transaction via Sponsor...")
+    try:
+        invoke_tx = await sponsor_account.sign_invoke_v3(
+            calls=calls,
+            resource_bounds=ResourceBoundsMapping(
+                l1_gas=ResourceBounds(max_amount=1000, max_price_per_unit=100_000_000_000_000),
+                l2_gas=ResourceBounds(max_amount=2_000_000, max_price_per_unit=10_000_000_000),
+                l1_data_gas=ResourceBounds(max_amount=5000, max_price_per_unit=100_000_000_000_000)
+            )
+        )
+        resp = await client.send_transaction(invoke_tx)
+        print(f"  TX Hash: {hex(resp.transaction_hash)}")
+        
+        await client.wait_for_tx(resp.transaction_hash)
+        print("  ✅ Claim Successful!")
+        return True
+    
+    except Exception as e:
+        print(f"  ❌ Transaction Failed: {e}")
+        return False
 
 async def main():
-    parser = argparse.ArgumentParser(description="StealthFlow Gasless Claim")
-    parser.add_argument("--stealth-priv", required=True, help="Stealth private key (hex)")
-    parser.add_argument("--to", required=True, help="Recipient address (hex)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stealth-priv", required=True)
+    parser.add_argument("--to", required=True)
+    parser.add_argument("--amount", default="0", help="Amount in wei (0 = sweep all)")
     
     args = parser.parse_args()
-    
-    stealth_priv = int(args.stealth_priv, 16)
-    recipient = args.to
-    
-    success = await gasless_claim(stealth_priv, recipient)
+    success = await gasless_claim(
+        int(args.stealth_priv, 16), 
+        args.to, 
+        int(args.amount)
+    )
     sys.exit(0 if success else 1)
-
 
 if __name__ == "__main__":
     asyncio.run(main())

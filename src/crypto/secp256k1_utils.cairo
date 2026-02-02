@@ -21,6 +21,18 @@ pub fn compute_view_tag(shared_secret_x: u256) -> u8 {
 }
 
 /// Verifies a secp256k1 signature using Garaga's optimized verification.
+/// 
+/// # Important
+/// The caller must verify that the signature's embedded msg_hash matches
+/// the expected transaction hash BEFORE calling this function. This function
+/// only validates the mathematical correctness of the signature.
+/// 
+/// # Arguments
+/// * `signature_with_hint` - The Garaga signature with verification hints
+/// * `public_key` - The expected signer's public key
+/// 
+/// # Returns
+/// * `true` if signature is mathematically valid
 pub fn verify_secp256k1_signature(
     signature_with_hint: ECDSASignatureWithHint,
     public_key: Secp256k1PublicKey

@@ -133,8 +133,8 @@ import { RpcProvider, hash, CallData, num } from 'starknet';
 export const CONTRACTS = {
     STEALTH_ANNOUNCER: '0x01f79771a9767967bc76997a7370117f6c7c5896df675af50ac22f3150caf58a',
     STEALTH_PAYMASTER: '0x0',
-    UDC: '0x041a78e741e5af2fec34b637d19f86f528d2495b879f0bc15624d63d397b5d21', // Universal Deployer Contract (Sepolia)
-    STEALTH_ACCOUNT_CLASS_HASH: '0x12cdffb7d81d52c38f0c7fa382ab698ccf50d69b7509080a8b3a656b106d003',
+    UDC: '0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf', // Universal Deployer Contract (Sepolia)
+    STEALTH_ACCOUNT_CLASS_HASH: '0x331c518a72cfe1061da811efcb7ba2d98628ce9ac0c50a49d3b1c1d897d87e2',
     ETH: '0x049d36570d4e46f48e99674bd3fcc84644ddd6b96f7c741b1562b82f9e004dc7',
     STRK: '0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d',
 };

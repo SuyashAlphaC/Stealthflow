@@ -6,7 +6,7 @@ import path from 'path';
 export async function POST(req: Request) {
     try {
         const body = await req.json();
-        const { stealthPriv, recipient } = body;
+        const { stealthPriv, recipient, amount } = body;
 
         if (!stealthPriv || !recipient) {
             return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
