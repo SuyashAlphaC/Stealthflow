@@ -128,7 +128,7 @@ export function PrivacyScanner({ onFundDiscovered }: Props) {
                         stealthPriv,
                         ephemeralPub: event.ephemeralPubkey,
                         amount: amountFormatted,
-                        token: 'ETH', // Simplification: assume ETH or check announcements if they included token info
+                        token: 'STRK', // Simplification: assume STRK as per new requirement
                         txHash: event.txHash
                     });
                 }

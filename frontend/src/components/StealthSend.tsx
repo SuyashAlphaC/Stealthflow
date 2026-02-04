@@ -224,9 +224,7 @@ export function StealthSend({ onShowDebugger }: Props) {
                                 value={token}
                                 onChange={(e) => setToken(e.target.value)}
                             >
-                                <option value="STRK">STRK</option>
-                                <option value="ETH">ETH</option>
-                                <option value="USDC">USDC</option>
+                                <option value="STRK">Native STRK</option>
                             </select>
                         </div>
                     </div>
