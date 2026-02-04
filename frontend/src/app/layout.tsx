@@ -1,7 +1,14 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Outfit, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { StarknetProvider } from "../providers/starknet-provider";
+import { ThemeProvider } from "../providers/theme-provider";
+import { Toaster } from "sonner";
+
+const outfit = Outfit({
+  variable: "--font-outfit",
+  subsets: ["latin"],
+});
 
 const inter = Inter({
   variable: "--font-inter",
@@ -25,13 +32,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body
-        className={`${inter.variable} ${jetbrainsMono.variable} antialiased min-h-screen`}
+        className={`${outfit.variable} ${inter.variable} ${jetbrainsMono.variable} antialiased min-h-screen bg-background text-foreground`}
       >
-        <StarknetProvider>
-          {children}
-        </StarknetProvider>
+        <ThemeProvider
+          attribute="class"
+          forcedTheme="dark"
+          disableTransitionOnChange
+        >
+          <StarknetProvider>
+            {children}
+            <Toaster position="bottom-right" theme="system" />
+          </StarknetProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

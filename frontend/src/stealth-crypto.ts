@@ -155,7 +155,7 @@ export function checkStealthPayment(
     _spendPub: Point,
     ephemeralPub: Point,
     viewTag: number
-): bigint | null {
+): { sharedSecret: Point, sharedSecretHash: bigint } | null {
     // S = v * R (view_priv * ephemeral_pub)
     const sharedSecret = pointMul(viewPriv, ephemeralPub);
     const sX = sharedSecret.x;
@@ -169,8 +169,11 @@ export function checkStealthPayment(
         return null;
     }
 
-    // Full match - return the hash scalar
-    return bytesToBigInt(hashedS);
+    // Full match - return both the point (for metadata) and hash (for keys)
+    return {
+        sharedSecret,
+        sharedSecretHash: bytesToBigInt(hashedS)
+    };
 }
 
 /**

@@ -13,11 +13,17 @@
     "@noble/hashes": "^2.0.1",
     "@starknet-react/chains": "^5.0.3",
     "@starknet-react/core": "^5.0.3",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.31.0",
     "get-starknet-core": "^4.0.0",
+    "lucide-react": "^0.563.0",
     "next": "16.1.6",
+    "next-themes": "^0.4.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "starknet": "^9.2.1"
+    "sonner": "^2.0.7",
+    "starknet": "^9.2.1",
+    "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

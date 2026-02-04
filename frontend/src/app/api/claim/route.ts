@@ -20,7 +20,7 @@ export async function POST(req: Request) {
 
         console.log('[API] Executing gasless claim script:', command);
 
-        return new Promise((resolve) => {
+        return new Promise<NextResponse>((resolve) => {
             exec(command, {
                 timeout: 120000, // 2 minute timeout
                 env: {
@@ -40,11 +40,20 @@ export async function POST(req: Request) {
                 console.log('[API] Script Output:', stdout);
 
                 // Parse Tx Hashes from stdout (new format)
-                const deployMatch = stdout.match(/Deploy TX: (0x[0-9a-fA-F]+)/);
-                const transferMatch = stdout.match(/Transfer TX: (0x[0-9a-fA-F]+)/);
+                // Parse Atomic Tx Hash
+                const txMatch = stdout.match(/TX Hash: (0x[0-9a-fA-F]+)/);
+                const deployedMatch = stdout.match(/Deployed: (False|True)/);
 
-                const deployTxHash = deployMatch ? deployMatch[1] : null;
-                const transferTxHash = transferMatch ? transferMatch[1] : null;
+                const mainTxHash = txMatch ? txMatch[1] : null;
+                const wasDeployed = deployedMatch ? deployedMatch[1] === 'False' : true; // "False" means it wasn't deployed yet, so it WILL be deployed in this TX. Wait, Line 198 says "Deployed: True" if it exists. So False means it needs deployment.
+
+                // Logic:
+                // Script prints "Deployed: True" if it IS deployed.
+                // If "Deployed: True" -> No deployment in this TX -> deployTxHash = null.
+                // If "Deployed: False" -> Deployment happens in this TX -> deployTxHash = mainTxHash.
+
+                const deployTxHash = (deployedMatch && deployedMatch[1] === 'False') ? mainTxHash : null;
+                const transferTxHash = mainTxHash;
 
                 resolve(NextResponse.json({
                     success: true,

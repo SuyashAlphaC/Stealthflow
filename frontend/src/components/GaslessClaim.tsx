@@ -1,10 +1,29 @@
 'use client';
 
-import { useState } from 'react';
-import { Point, formatPoint, computeStealthAddress } from '../stealth-crypto';
-import { CONTRACTS, getProvider, computeStealthAccountAddress } from '../contracts';
-import { CallData } from 'starknet';
+import { useState, useMemo } from 'react';
 import { useAccount } from '@starknet-react/core';
+import { Point, formatPoint } from '../stealth-crypto';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Card, CardContent, CardHeader, CardTitle, CardFooter } from './ui/card';
+import { Badge } from './ui/badge';
+import { Loader2, Zap, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { CONTRACTS, computeStealthAccountAddress, getProvider } from '../contracts';
+
+interface SelectedFund {
+    stealthPub: Point;
+    stealthPriv: bigint;
+    ephemeralPub: Point;
+    amount: string;
+    token: string;
+    txHash: string;
+}
+
+interface Props {
+    fund: SelectedFund | null;
+    onClose: () => void;
+}
 
 interface ClaimStep {
     id: number;
@@ -13,325 +32,213 @@ interface ClaimStep {
     detail?: string;
 }
 
-interface Props {
-    fund: {
-        stealthPub: Point;
-        stealthPriv: bigint;
-        ephemeralPub: Point;
-        amount: string;
-        token: string;
-        txHash: string;
-    } | null;
-    onClose: () => void;
-}
-
 export function GaslessClaim({ fund, onClose }: Props) {
+    const { address } = useAccount();
+    const [recipientAddress, setRecipientAddress] = useState(address || '');
+    const [isClaiming, setIsClaiming] = useState(false);
+    const [claimStatus, setClaimStatus] = useState<'idle' | 'generating_proof' | 'submitting' | 'complete' | 'failed'>('idle');
+    const [claimTxHash, setClaimTxHash] = useState<string | null>(null);
     const [steps, setSteps] = useState<ClaimStep[]>([
         { id: 1, label: 'Generating Garaga Signature', status: 'pending', detail: '42-felt secp256k1 hints' },
         { id: 2, label: 'Deploying Stealth Account', status: 'pending', detail: 'Counterfactual deployment' },
         { id: 3, label: 'Executing Multi-call', status: 'pending', detail: 'Claim + Paymaster reimbursement' },
         { id: 4, label: 'Verifying Completion', status: 'pending', detail: 'Transaction confirmed' },
     ]);
-    const [currentStep, setCurrentStep] = useState(0);
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [isComplete, setIsComplete] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const { address: recipientAddress } = useAccount();
 
-    const simulateStep = (stepIndex: number): Promise<void> => {
-        return new Promise((resolve, reject) => {
-            setTimeout(() => {
-                // 5% chance of failure for demo
-                if (Math.random() < 0.05) {
-                    reject(new Error('RPC timeout'));
-                } else {
-                    resolve();
-                }
-            }, 1500 + Math.random() * 1000);
-        });
-    };
+    // Update recipient address when wallet connects
+    useMemo(() => {
+        if (address && !recipientAddress) {
+            setRecipientAddress(address);
+        }
+    }, [address, recipientAddress]);
 
     const handleClaim = async () => {
         if (!fund) return;
-
-        setIsProcessing(true);
-        setError(null);
-
-        for (let i = 0; i < steps.length; i++) {
-            setCurrentStep(i);
-            setSteps(prev => prev.map((s, idx) =>
-                idx === i ? { ...s, status: 'active' } : s
-            ));
-
-            // Log details for verification
-            if (i === 0) {
-                console.log('%c[Claim] 1. Generating Garaga Signature...', 'color: cyan');
-                console.log('Stealth Private Key:', '0x' + fund.stealthPriv.toString(16));
-                console.log('Stealth Public Key:', formatPoint(fund.stealthPub));
-                console.log('Mocking 42-felt secp256k1 signature verification hints...');
-            } else if (i === 1) {
-                const address = computeStealthAddress(fund.stealthPub);
-                console.log('%c[Claim] 2. Deploying Stealth Account...', 'color: cyan');
-                console.log('Target Address:', address);
-                console.log('Note: In simulation mode. To verify funds, check balance of:', address);
-            } else if (i === 2) {
-                console.log('%c[Claim] 3. Executing Multi-call...', 'color: cyan');
-                console.log('Enabling Paymaster for gas sponsorship...');
-                console.log('Executing: Claim Transfer -> Destination');
-            } else if (i === 3) {
-                console.log('%c[Claim] 4. Verification Complete', 'color: green');
-                console.log('Funds ready at stealth address.');
-            }
-
-
-            if (i === 1) { // Deploy Step - Real Check
-                // 1. Calculate Real Address
-                const contractAddress = computeStealthAccountAddress(fund.stealthPub);
-                console.log('[Claim] Computed Stealth Account Address:', contractAddress);
-
-                // 2. Check Balance
-                const provider = getProvider('sepolia');
-                try {
-                    const balanceResult = await provider.callContract({
-                        contractAddress: CONTRACTS.STRK,
-                        entrypoint: 'balanceOf',
-                        calldata: [contractAddress]
-                    });
-                    const balance = BigInt(balanceResult[0]) + (BigInt(balanceResult[1]) << BigInt(128));
-                    console.log(`[Claim] Balance at Account ${contractAddress}: ${balance.toString()} wei`);
-
-                    if (balance > BigInt(0)) {
-                        console.log('%c[Claim] ✅ Account funded', 'color: green');
-                    } else {
-                        console.warn('%c[Claim] ⚠️ Account has 0 balance.', 'color: orange');
-                    }
-                } catch (e) {
-                    console.warn('[Claim] Balance check skipped/failed');
-                }
-            }
-
-            try {
-                if (i === 2) { // Execute Step via API
-                    if (!recipientAddress) throw new Error("Wallet not connected");
-
-                    console.log('[Claim] Invoking Backend Automation...');
-                    const response = await fetch('/api/claim', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            stealthPriv: '0x' + fund.stealthPriv.toString(16),
-                            recipient: recipientAddress
-                        })
-                    });
-
-                    const result = await response.json();
-                    if (!response.ok || !result.success) {
-                        throw new Error(result.error || 'Automation failed');
-                    }
-
-                    console.log('[Claim] Backend Logs:', result.logs);
-
-                    if (result.deployTxHash) {
-                        console.log('%c[Claim] 🚀 Deploy TX:', 'color: cyan', result.deployTxHash);
-                        // Update step 2 to show it's done with TX
-                        setSteps(prev => prev.map(s =>
-                            s.id === 2 ? { ...s, detail: `Deployed: ${result.deployTxHash.slice(0, 10)}...` } : s
-                        ));
-                    }
-
-                    if (result.transferTxHash) {
-                        console.log('%c[Claim] 💸 Transfer TX:', 'color: green', result.transferTxHash);
-                        // Update step 3
-                        setSteps(prev => prev.map(s =>
-                            s.id === 3 ? { ...s, detail: `Transfer: ${result.transferTxHash.slice(0, 10)}...` } : s
-                        ));
-                    }
-
-                } else {
-                    // Short delay for UI
-                    await new Promise(r => setTimeout(r, 1000));
-                }
-
-                setSteps(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, status: 'complete' } : s
-                ));
-            } catch (err) {
-                setSteps(prev => prev.map((s, idx) =>
-                    idx === i ? { ...s, status: 'error' } : s
-                ));
-                setError(err instanceof Error ? err.message : 'Unknown error');
-                setIsProcessing(false);
-                return;
-            }
+        if (!recipientAddress) {
+            toast.error("Please enter a recipient address");
+            return;
         }
 
-        setIsComplete(true);
-        setIsProcessing(false);
+        setIsClaiming(true);
+        setClaimStatus('generating_proof');
+        const toastId = toast.loading("Starting gasless claim...");
+
+        // Reset steps
+        setSteps(prev => prev.map(s => ({ ...s, status: 'pending' })));
+
+        try {
+            // Step 1: Generate Proof & Deploy
+            setSteps(prev => prev.map(s => s.id === 1 ? { ...s, status: 'active' } : s));
+            console.log('[Claim] Initiating claim via backend API...');
+
+            // Call the API endpoint
+            const response = await fetch('/api/claim', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    stealthPriv: "0x" + fund.stealthPriv.toString(16),
+                    recipient: recipientAddress,
+                    amount: fund.amount // Optional, for logging
+                }),
+            });
+
+            const data = await response.json();
+
+            if (!response.ok || !data.success) {
+                throw new Error(data.error || 'Claim failed');
+            }
+
+            console.log('[Claim] API Response:', data);
+
+            // Update Steps based on response
+            setSteps(prev => prev.map(s => s.id === 1 ? { ...s, status: 'complete' } : s));
+
+            // Step 2: Deploy
+            if (data.deployTxHash) {
+                setSteps(prev => prev.map(s => s.id === 2 ? { ...s, status: 'complete', detail: 'Deployed: ' + data.deployTxHash.slice(0, 6) } : s));
+            } else {
+                setSteps(prev => prev.map(s => s.id === 2 ? { ...s, status: 'complete', detail: 'Already Deployed' } : s));
+            }
+
+            // Step 3: Execute
+            if (data.transferTxHash) {
+                setSteps(prev => prev.map(s => s.id === 3 ? { ...s, status: 'complete', detail: 'Transfer: ' + data.transferTxHash.slice(0, 6) } : s));
+                setClaimTxHash(data.transferTxHash);
+            } else {
+                throw new Error("No transfer transaction hash returned");
+            }
+
+            // Step 4: Verify
+            setSteps(prev => prev.map(s => s.id === 4 ? { ...s, status: 'complete' } : s));
+            setClaimStatus('complete');
+
+            toast.success("Funds claimed successfully!", { id: toastId });
+
+        } catch (error: any) {
+            console.error('Claim failed:', error);
+            setClaimStatus('failed');
+            // Find currently active step and mark as error
+            setSteps(prev => prev.map(s => s.status === 'active' ? { ...s, status: 'error' } : s));
+            toast.error("Claim failed: " + error.message, { id: toastId });
+        } finally {
+            setIsClaiming(false);
+        }
     };
 
-    if (!fund) {
-        return (
-            <div className="text-center py-12">
-                <div className="text-4xl mb-4">🔍</div>
-                <h3 className="text-lg font-semibold text-[var(--foreground)] mb-2">
-                    No Funds Selected
-                </h3>
-                <p className="text-[var(--text-secondary)] text-sm">
-                    Discover stealth payments in the Scanner tab to claim them here.
-                </p>
-            </div>
-        );
-    }
+    if (!fund) return null;
 
     return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div>
-                <h2 className="text-xl font-semibold text-[var(--foreground)] mb-2">
-                    Gasless Claim
-                </h2>
-                <p className="text-[var(--text-secondary)] text-sm">
-                    Claim your stealth funds with one click. Gas paid via {fund.token}.
-                </p>
-            </div>
+        <div className="max-w-xl mx-auto space-y-6">
+            <Button variant="ghost" onClick={onClose} className="gap-2 mb-4">
+                <ArrowLeft className="w-4 h-4" /> Back to Scanner
+            </Button>
 
-            {/* Fund Summary */}
-            <div className="card-elevated">
-                <div className="flex items-center justify-between mb-4">
-                    <span className="text-sm text-[var(--text-muted)] uppercase tracking-wide">
-                        Claiming
-                    </span>
-                    <button
-                        onClick={onClose}
-                        className="text-[var(--text-muted)] hover:text-[var(--foreground)] text-sm"
-                    >
-                        ✕ Cancel
-                    </button>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[var(--accent-primary)] to-[var(--accent-secondary)] flex items-center justify-center text-xl">
-                        💰
+            <Card className="border-green-500/20">
+                <CardHeader>
+                    <div className="flex items-center justify-between">
+                        <CardTitle className="flex items-center gap-2">
+                            <Zap className="w-5 h-5 text-yellow-500" />
+                            Gasless Claim
+                        </CardTitle>
+                        <Badge variant="success">Ready to Claim</Badge>
                     </div>
-                    <div>
-                        <div className="text-2xl font-bold text-[var(--foreground)]">
-                            {fund.amount} {fund.token}
+                </CardHeader>
+                <CardContent className="space-y-6">
+                    <div className="bg-muted/50 p-4 rounded-lg space-y-3">
+                        <div className="flex justify-between items-center">
+                            <span className="text-sm text-muted-foreground">Amount</span>
+                            <span className="text-xl font-bold">{fund.amount} {fund.token}</span>
                         </div>
-                        <div className="font-mono text-xs text-[var(--text-muted)]">
-                            {fund.txHash.slice(0, 18)}...{fund.txHash.slice(-10)}
+                        <div className="flex justify-between items-center">
+                            <span className="text-sm text-muted-foreground">Original Sender Tx</span>
+                            <span className="font-mono text-xs text-primary truncate max-w-[150px]">
+                                {fund.txHash.slice(0, 10)}...
+                            </span>
                         </div>
                     </div>
-                </div>
 
-                {/* Stealth Address */}
-                <div className="mt-4 pt-4 border-t border-[var(--border)]">
-                    <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">
-                        Stealth Address
-                    </span>
-                    <p className="font-mono text-xs text-[var(--accent-secondary)] mt-1">
-                        {formatPoint(fund.stealthPub)}
-                    </p>
-                </div>
-            </div>
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium">Destination Wallet Address</label>
+                        <Input
+                            placeholder="0x..."
+                            value={recipientAddress}
+                            onChange={(e) => setRecipientAddress(e.target.value)}
+                            className="font-mono"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            The address where you want to receive the funds. It can be a fresh address with 0 ETH!
+                        </p>
+                    </div>
 
-            {/* Progress Stepper */}
-            <div className="card">
-                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wide mb-6">
-                    Claim Progress
-                </h3>
-
-                <div className="space-y-4">
-                    {steps.map((step, idx) => (
-                        <div key={step.id} className="stepper-item">
-                            <div className={`stepper-circle ${step.status}`}>
-                                {step.status === 'complete' ? (
-                                    <span>✓</span>
-                                ) : step.status === 'active' ? (
-                                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                ) : step.status === 'error' ? (
-                                    <span>✕</span>
-                                ) : (
-                                    step.id
-                                )}
-                            </div>
-
-                            <div className="flex-1">
-                                <div className={`font-medium ${step.status === 'complete' ? 'text-[var(--accent-success)]' :
-                                    step.status === 'active' ? 'text-[var(--foreground)]' :
-                                        step.status === 'error' ? 'text-[var(--accent-error)]' :
-                                            'text-[var(--text-muted)]'
-                                    }`}>
-                                    {step.label}
+                    {/* Progress Stepper used when claiming or complete */}
+                    {(isClaiming || claimStatus === 'complete' || claimStatus === 'failed') && (
+                        <div className="space-y-3 py-4 border-t border-border">
+                            <h4 className="text-xs font-semibold uppercase text-muted-foreground">Claim Progress</h4>
+                            {steps.map((step) => (
+                                <div key={step.id} className="flex items-start gap-3">
+                                    <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] border ${step.status === 'complete' ? 'bg-green-500 border-green-500 text-white' :
+                                        step.status === 'active' ? 'border-primary text-primary' :
+                                            step.status === 'error' ? 'bg-red-500 border-red-500 text-white' :
+                                                'border-muted text-muted-foreground'
+                                        }`}>
+                                        {step.status === 'complete' ? <CheckCircle2 className="w-3 h-3" /> :
+                                            step.status === 'active' ? <Loader2 className="w-3 h-3 animate-spin" /> :
+                                                step.status === 'error' ? '!' : step.id}
+                                    </div>
+                                    <div className="flex-1">
+                                        <p className={`text-sm ${step.status === 'active' ? 'text-primary font-medium' :
+                                            step.status === 'complete' ? 'text-green-500' :
+                                                step.status === 'error' ? 'text-red-500' :
+                                                    'text-muted-foreground'
+                                            }`}>
+                                            {step.label}
+                                        </p>
+                                        {(step.detail && step.status !== 'pending') && (
+                                            <p className="text-xs text-muted-foreground">{step.detail}</p>
+                                        )}
+                                    </div>
                                 </div>
-                                <div className="text-xs text-[var(--text-muted)]">
-                                    {step.detail}
-                                </div>
-                            </div>
+                            ))}
+                        </div>
+                    )}
 
-                            {step.status === 'active' && (
-                                <div className="text-xs text-[var(--accent-primary)] animate-pulse">
-                                    Processing...
-                                </div>
+                    {claimStatus === 'complete' ? (
+                        <div className="text-center space-y-2 p-4 bg-green-500/10 rounded-lg border border-green-500/20">
+                            <CheckCircle2 className="w-8 h-8 text-green-500 mx-auto" />
+                            <h3 className="font-semibold text-green-500">Claim Successful!</h3>
+                            <p className="text-sm text-muted-foreground">Your funds have been transferred.</p>
+                            {claimTxHash && (
+                                <a
+                                    href={`https://sepolia.voyager.online/tx/${claimTxHash}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs text-primary hover:underline"
+                                >
+                                    View Transaction on Voyager
+                                </a>
                             )}
                         </div>
-                    ))}
-                </div>
-
-                {/* Error display */}
-                {error && (
-                    <div className="mt-4 p-3 bg-[var(--accent-error)] bg-opacity-10 border border-[var(--accent-error)] rounded-lg">
-                        <div className="text-sm text-[var(--accent-error)] font-medium">
-                            Transaction Failed
-                        </div>
-                        <div className="text-xs text-[var(--text-secondary)] mt-1">
-                            {error}. Retry to continue.
-                        </div>
-                    </div>
-                )}
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex gap-3">
-                {isComplete ? (
-                    <button
-                        onClick={onClose}
-                        className="flex-1 btn-primary bg-[var(--accent-success)]"
-                    >
-                        ✓ Claim Complete - Close
-                    </button>
-                ) : (
-                    <>
-                        <button
-                            onClick={onClose}
-                            className="btn-secondary"
-                            disabled={isProcessing}
-                        >
-                            Cancel
-                        </button>
-                        <button
+                    ) : (
+                        <Button
                             onClick={handleClaim}
-                            disabled={isProcessing}
-                            className={`flex-1 btn-primary ${isProcessing ? 'opacity-50' : ''}`}
+                            disabled={isClaiming || !recipientAddress}
+                            className="w-full h-12 text-lg"
+                            variant="primary"
                         >
-                            {isProcessing ? (
-                                <span className="flex items-center justify-center gap-2">
-                                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            {isClaiming ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     Processing...
-                                </span>
-                            ) : error ? (
-                                '🔄 Retry Claim'
+                                </>
                             ) : (
-                                '⚡ One-Click Claim'
+                                "Claim Funds (Gasless)"
                             )}
-                        </button>
-                    </>
-                )}
-            </div>
-
-            {/* Technical Details */}
-            <div className="text-xs text-[var(--text-muted)] text-center">
-                Powered by Garaga secp256k1 verification • 42-felt signature hints
-            </div>
+                        </Button>
+                    )}
+                </CardContent>
+            </Card>
         </div>
     );
 }

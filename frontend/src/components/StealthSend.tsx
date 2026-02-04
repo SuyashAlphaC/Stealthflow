@@ -1,8 +1,7 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { useAccount, useContract, useSendTransaction } from '@starknet-react/core';
-import { Contract } from 'starknet';
+import { useAccount } from '@starknet-react/core';
 import {
     generateStealthAddress,
     parseMetaAddress,
@@ -12,7 +11,13 @@ import {
     encryptMetadata,
     parseTokenToWei
 } from '../stealth-crypto';
-import { CONTRACTS, STEALTH_ANNOUNCER_ABI, computeStealthAccountAddress } from '../contracts';
+import { CONTRACTS, computeStealthAccountAddress } from '../contracts';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from './ui/card';
+import { Badge } from './ui/badge';
+import { Loader2, Lock, ArrowRight, ExternalLink, RefreshCw, CheckCircle2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface Props {
     onShowDebugger: (data: DebugData) => void;
@@ -28,7 +33,7 @@ export interface DebugData {
 }
 
 export function StealthSend({ onShowDebugger }: Props) {
-    const { account, address } = useAccount();
+    const { account } = useAccount();
     const [metaAddress, setMetaAddress] = useState('');
     const [amount, setAmount] = useState('');
     const [token, setToken] = useState('STRK');
@@ -83,6 +88,7 @@ export function StealthSend({ onShowDebugger }: Props) {
             });
 
             setIsGenerating(false);
+            toast.success("Stealth address generated successfully");
         }, 500);
     };
 
@@ -95,10 +101,14 @@ export function StealthSend({ onShowDebugger }: Props) {
     };
 
     const handleSend = async () => {
-        if (!generatedData || !account || !amount) return;
+        if (!generatedData || !account || !amount) {
+            toast.error("Please fill in all fields and connect wallet");
+            return;
+        }
 
         setIsSending(true);
         setTxHash(null);
+        const toastId = toast.loading("Sending private transaction...");
 
         try {
             // Split ephemeral pubkey into u256 (low, high) pairs
@@ -117,7 +127,6 @@ export function StealthSend({ onShowDebugger }: Props) {
             const [cipherLow, cipherHigh] = splitU256(encryptedAmounts[0]);
 
             // Compute stealth contract address (Deterministic Starknet Address)
-            // This ensures we can deploy the account later to claim funds
             const stealthAddressHex = computeStealthAccountAddress(generatedData.stealthPub);
 
             // Execute multicall: transfer + announce
@@ -145,170 +154,182 @@ export function StealthSend({ onShowDebugger }: Props) {
             ]);
 
             setTxHash(result.transaction_hash);
+            toast.success("Transaction sent successfully!", { id: toastId });
             console.log('Transaction sent:', result.transaction_hash);
-        } catch (error) {
+        } catch (error: any) {
             console.error('Transaction failed:', error);
+            toast.error("Transaction failed: " + (error.message || "Unknown error"), { id: toastId });
         } finally {
             setIsSending(false);
         }
     };
 
     return (
-        <div className="space-y-6">
-            {/* Header */}
-            <div>
-                <h2 className="text-xl font-semibold text-[var(--foreground)] mb-2">
-                    Stealth Send
-                </h2>
-                <p className="text-[var(--text-secondary)] text-sm">
-                    Send funds privately using stealth addresses. Only the recipient can claim.
+        <div className="space-y-6 max-w-2xl mx-auto">
+            <div className="text-center space-y-2">
+                <h2 className="text-3xl font-bold tracking-tight">Stealth Send</h2>
+                <p className="text-muted-foreground">
+                    Send funds privately. Only the recipient with the correct key can see and claim.
                 </p>
             </div>
 
-            {/* Meta Address Input */}
-            <div className="space-y-2">
-                <label className="text-sm font-medium text-[var(--text-secondary)]">
-                    Recipient Meta-Address
-                </label>
-                <textarea
-                    className="input min-h-[80px] font-mono text-xs resize-none"
-                    placeholder="st:starknet:0xVIEW_X,VIEW_Y,SPEND_X,SPEND_Y"
-                    value={metaAddress}
-                    onChange={(e) => {
-                        setMetaAddress(e.target.value);
-                        setGeneratedData(null);
-                    }}
-                />
-                {metaAddress && !parsedAddress && (
-                    <p className="text-xs text-[var(--accent-error)]">
-                        Invalid meta-address format
-                    </p>
-                )}
-                {parsedAddress && (
-                    <p className="text-xs text-[var(--accent-success)]">
-                        ✓ Valid meta-address parsed
-                    </p>
-                )}
-            </div>
-
-            {/* Amount & Token */}
-            <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-[var(--text-secondary)]">
-                        Amount
-                    </label>
-                    <input
-                        type="text"
-                        className="input"
-                        placeholder="0.0"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                    />
-                </div>
-                <div className="space-y-2">
-                    <label className="text-sm font-medium text-[var(--text-secondary)]">
-                        Token
-                    </label>
-                    <select
-                        className="input cursor-pointer"
-                        value={token}
-                        onChange={(e) => setToken(e.target.value)}
-                    >
-                        <option value="ETH">ETH</option>
-                        <option value="STRK">STRK</option>
-                        <option value="USDC">USDC</option>
-                    </select>
-                </div>
-            </div>
-
-            {/* Generate Button */}
-            {!generatedData && (
-                <button
-                    onClick={handleGenerate}
-                    disabled={!parsedAddress || isGenerating}
-                    className={`w-full btn-secondary ${!parsedAddress ? 'opacity-50 cursor-not-allowed' : ''
-                        }`}
-                >
-                    {isGenerating ? (
-                        <span className="flex items-center justify-center gap-2">
-                            <span className="w-4 h-4 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
-                            Deriving Stealth Address...
-                        </span>
-                    ) : (
-                        'Generate Stealth Address'
-                    )}
-                </button>
-            )}
-
-            {/* Privacy Preview */}
-            {generatedData && (
-                <div className="card-elevated space-y-4 animate-fade-in">
-                    <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-[var(--foreground)]">
-                            Privacy Preview
-                        </h3>
-                        <div className="view-tag">
-                            View Tag: 0x{generatedData.viewTag.toString(16).padStart(2, '0').toUpperCase()}
+            <Card>
+                <CardHeader>
+                    <CardTitle>Recipient Details</CardTitle>
+                    <CardDescription>Enter the recipient's meta-address and amount</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-medium leading-none">
+                            Recipient Meta-Address
+                        </label>
+                        <div className="relative">
+                            <textarea
+                                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono resize-none"
+                                placeholder="st:starknet:0xVIEW_X,VIEW_Y,SPEND_X,SPEND_Y"
+                                value={metaAddress}
+                                onChange={(e) => {
+                                    setMetaAddress(e.target.value);
+                                    setGeneratedData(null);
+                                }}
+                            />
+                            {metaAddress && (
+                                <div className="absolute top-2 right-2">
+                                    {parsedAddress ? (
+                                        <Badge variant="success" className="gap-1">
+                                            <CheckCircle2 className="w-3 h-3" /> Valid
+                                        </Badge>
+                                    ) : (
+                                        <Badge variant="destructive">Invalid</Badge>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     </div>
 
-                    <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium leading-none">Amount</label>
+                            <Input
+                                type="text"
+                                placeholder="0.0"
+                                value={amount}
+                                onChange={(e) => setAmount(e.target.value)}
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium leading-none">Token</label>
+                            <select
+                                className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                                value={token}
+                                onChange={(e) => setToken(e.target.value)}
+                            >
+                                <option value="STRK">STRK</option>
+                                <option value="ETH">ETH</option>
+                                <option value="USDC">USDC</option>
+                            </select>
+                        </div>
+                    </div>
+                </CardContent>
+                <CardFooter>
+                    {!generatedData && (
+                        <Button
+                            onClick={handleGenerate}
+                            disabled={!parsedAddress || isGenerating}
+                            className="w-full"
+                            variant="secondary"
+                        >
+                            {isGenerating ? (
+                                <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Deriving...
+                                </>
+                            ) : (
+                                <>
+                                    <RefreshCw className="mr-2 h-4 w-4" />
+                                    Generate Stealth Address
+                                </>
+                            )}
+                        </Button>
+                    )}
+                </CardFooter>
+            </Card>
+
+            {generatedData && (
+                <Card className="border-primary/50 relative overflow-hidden">
+                    <div className="absolute inset-0 bg-primary/5 pointer-events-none" />
+                    <CardHeader>
+                        <div className="flex items-center justify-between">
+                            <CardTitle className="flex items-center gap-2">
+                                <Lock className="w-5 h-5 text-primary" />
+                                Privacy Preview
+                            </CardTitle>
+                            <Badge variant="outline" className="font-mono">
+                                View Tag: 0x{generatedData.viewTag.toString(16).padStart(2, '0').toUpperCase()}
+                            </Badge>
+                        </div>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
                         <div className="space-y-1">
-                            <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">
+                            <span className="text-xs text-muted-foreground uppercase tracking-wide">
                                 Stealth Address
                             </span>
-                            <p className="font-mono text-xs text-[var(--accent-primary)] break-all">
+                            <div className="p-2 rounded bg-muted/50 font-mono text-xs break-all text-primary">
                                 {formatPoint(generatedData.stealthPub)}
-                            </p>
+                            </div>
                         </div>
 
                         <div className="space-y-1">
-                            <span className="text-xs text-[var(--text-muted)] uppercase tracking-wide">
+                            <span className="text-xs text-muted-foreground uppercase tracking-wide">
                                 Ephemeral Key
                             </span>
-                            <p className="font-mono text-xs text-[var(--text-secondary)] break-all">
+                            <div className="p-2 rounded bg-muted/50 font-mono text-xs break-all">
                                 {formatPoint(generatedData.ephemeralPub)}
-                            </p>
+                            </div>
                         </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-[var(--border)] space-y-3">
+                    </CardContent>
+                    <CardFooter className="flex-col gap-4">
                         {!account ? (
-                            <p className="text-sm text-[var(--text-muted)] text-center">
-                                Connect wallet to send
-                            </p>
+                            <Button disabled className="w-full" variant="outline">
+                                Connect Wallet to Send
+                            </Button>
                         ) : (
-                            <button
+                            <Button
                                 onClick={handleSend}
                                 disabled={!amount || isSending}
-                                className={`w-full btn-primary ${!amount || isSending ? 'opacity-50' : ''}`}
+                                className="w-full"
+                                size="lg"
                             >
                                 {isSending ? (
-                                    <span className="flex items-center justify-center gap-2">
-                                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                    <>
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                         Sending...
-                                    </span>
+                                    </>
                                 ) : (
-                                    '🔒 Send Privately'
+                                    <>
+                                        Send Privately <ArrowRight className="ml-2 h-4 w-4" />
+                                    </>
                                 )}
-                            </button>
+                            </Button>
                         )}
 
                         {txHash && (
-                            <div className="text-center">
-                                <p className="text-sm text-[var(--accent-success)] mb-1">✓ Transaction sent!</p>
+                            <div className="flex flex-col items-center gap-2 w-full pt-2">
+                                <div className="flex items-center gap-2 text-green-500 font-medium">
+                                    <CheckCircle2 className="w-4 h-4" /> Transaction Sent
+                                </div>
                                 <a
-                                    href={`https://sepolia.starkscan.co/tx/${txHash}`}
+                                    href={`https://sepolia.voyager.online/tx/${txHash}`}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="text-xs text-[var(--accent-primary)] hover:underline"
+                                    className="text-xs text-primary hover:underline flex items-center gap-1"
                                 >
-                                    View on Starkscan →
+                                    View on Starkscan <ExternalLink className="w-3 h-3" />
                                 </a>
                             </div>
                         )}
-                    </div>
-                </div>
+                    </CardFooter>
+                </Card>
             )}
         </div>
     );
