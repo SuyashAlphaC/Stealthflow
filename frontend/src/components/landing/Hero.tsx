@@ -9,9 +9,19 @@ export function Hero() {
     return (
         <section className="relative min-h-[90vh] flex flex-col items-center justify-center overflow-hidden px-4">
             {/* Background Elements */}
-            <div className="absolute inset-0 pointer-events-none">
-                <div className="absolute top-[20%] left-[10%] w-[300px] h-[300px] bg-primary/20 blur-[100px] rounded-full animate-float delay-0" />
-                <div className="absolute bottom-[20%] right-[10%] w-[400px] h-[400px] bg-purple-500/20 blur-[100px] rounded-full animate-float delay-1000" />
+            {/* Background Elements */}
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                <div
+                    className="w-[800px] h-[800px] opacity-[0.03] animate-pulse-glow"
+                    style={{
+                        backgroundImage: 'url(/Stealthflow_logo.png)',
+                        backgroundSize: 'contain',
+                        backgroundRepeat: 'no-repeat',
+                        backgroundPosition: 'center',
+                        filter: 'grayscale(100%)'
+                    }}
+                />
+                <div className="absolute inset-0 bg-gradient-to-b from-background via-transparent to-background" />
             </div>
 
             <motion.div
