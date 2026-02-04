@@ -1,23 +1,18 @@
 #[starknet::contract(account)]
 pub mod StealthAccount {
-    use starknet::ContractAddress;
-    use starknet::get_caller_address;
-    use starknet::get_tx_info;
-    use starknet::syscalls::call_contract_syscall;
-    use starknet::SyscallResultTrait;
+    use core::hash::{HashStateExTrait, HashStateTrait};
+    use core::poseidon::PoseidonTrait;
+    use garaga::signatures::ecdsa::ECDSASignatureWithHint;
     use starknet::account::Call;
     use starknet::storage::{StoragePointerReadAccess, StoragePointerWriteAccess};
-    use core::poseidon::PoseidonTrait;
-    use core::hash::{HashStateTrait, HashStateExTrait};
-
-    use garaga::signatures::ecdsa::ECDSASignatureWithHint;
-    use stealth_flow::crypto::secp256k1_utils::{
-        verify_secp256k1_signature, Secp256k1PublicKey
-    };
+    use starknet::syscalls::call_contract_syscall;
+    use starknet::{ContractAddress, SyscallResultTrait, get_caller_address, get_tx_info};
+    use stealth_flow::crypto::secp256k1_utils::{Secp256k1PublicKey, verify_secp256k1_signature};
     use stealth_flow::interfaces::{IERC20Dispatcher, IERC20DispatcherTrait};
 
     const ISRC5_ID: felt252 = 0x3f918d17e5ee77373b56385708f855659a07f75997f365cf87748628532a055;
-    const ACCOUNT_INTERFACE_ID: felt252 = 0x2ceccef7f994940b3962a6c67e0ba4fcd37df7d131417c604f91e03caecc1cd;
+    const ACCOUNT_INTERFACE_ID: felt252 =
+        0x2ceccef7f994940b3962a6c67e0ba4fcd37df7d131417c604f91e03caecc1cd;
 
     #[storage]
     struct Storage {
@@ -42,12 +37,15 @@ pub mod StealthAccount {
             let mut results = ArrayTrait::new();
             let mut i = 0;
             loop {
-                if i >= calls.len() { break; }
+                if i >= calls.len() {
+                    break;
+                }
                 let call = calls.at(i);
-                let result = call_contract_syscall(*call.to, *call.selector, *call.calldata).unwrap_syscall();
+                let result = call_contract_syscall(*call.to, *call.selector, *call.calldata)
+                    .unwrap_syscall();
                 results.append(result);
                 i += 1;
-            };
+            }
             results
         }
 
@@ -65,7 +63,11 @@ pub mod StealthAccount {
 
     #[abi(embed_v0)]
     fn __validate_deploy__(
-        ref self: ContractState, class_hash: felt252, salt: felt252, public_key_x: u256, public_key_y: u256
+        ref self: ContractState,
+        class_hash: felt252,
+        salt: felt252,
+        public_key_x: u256,
+        public_key_y: u256,
     ) -> felt252 {
         self.validate_transaction()
     }
@@ -78,11 +80,11 @@ pub mod StealthAccount {
         token: ContractAddress,
         recipient: ContractAddress,
         amount: u256,
-        fee: u256
+        fee: u256,
     ) {
         // 1. Validate Nonce (Prevent Replay)
         let current_nonce = self.nonce.read();
-        
+
         // 2. Reconstruct Message Hash
         // Hash(recipient, amount, fee, token, nonce)
         let mut state = PoseidonTrait::new();
@@ -94,31 +96,30 @@ pub mod StealthAccount {
         let msg_hash = state.finalize();
 
         // 3. Verify Hash Integrity (Manual Extraction)
-        // Correct Indices: r(0,1), s(2,3), v(4), x(5,6), y(7,8), z(9,10)
+        // Correct Indices per Garaga Cairo struct: rx(0-3), s(4-5), v(6), z(7-8)
         let sig_span = signature.span();
-        assert(sig_span.len() >= 11, 'Sig too short');
-        
-        let z_low: felt252 = *sig_span[9];
-        let z_high: felt252 = *sig_span[10];
-        let z_val = u256 { 
-            low: z_low.try_into().unwrap(), 
-            high: z_high.try_into().unwrap() 
-        };
-        
+        assert(sig_span.len() >= 9, 'Sig too short');
+
+        let z_low: felt252 = *sig_span[7];
+        let z_high: felt252 = *sig_span[8];
+        let z_val = u256 { low: z_low.try_into().unwrap(), high: z_high.try_into().unwrap() };
+
         // CRITICAL SECURITY CHECK
         assert(z_val == msg_hash.into(), 'Hash Mismatch');
 
         // 4. Verify Signature (Garaga)
         let mut signature_span = signature.span();
-        let signature_with_hint_opt = Serde::<ECDSASignatureWithHint>::deserialize(ref signature_span);
+        let signature_with_hint_opt = Serde::<
+            ECDSASignatureWithHint,
+        >::deserialize(ref signature_span);
         assert(signature_with_hint_opt.is_some(), 'Invalid Sig Format');
-        
+
         let signature_with_hint = signature_with_hint_opt.unwrap();
 
         let pk_x = self.public_key_x.read();
         let pk_y = self.public_key_y.read();
         let public_key = Secp256k1PublicKey { x: pk_x, y: pk_y };
-        
+
         let is_valid = verify_secp256k1_signature(signature_with_hint, public_key);
         assert(is_valid, 'Invalid Signature');
 
@@ -127,7 +128,7 @@ pub mod StealthAccount {
 
         // 6. Execute Transfers
         let token_dispatcher = IERC20Dispatcher { contract_address: token };
-        let sponsor = get_caller_address(); 
+        let sponsor = get_caller_address();
 
         // Transfer to Recipient
         token_dispatcher.transfer(recipient, amount);
@@ -144,12 +145,14 @@ pub mod StealthAccount {
             let tx_info = get_tx_info().unbox();
             let mut signature = tx_info.signature;
             let signature_with_hint = Serde::<ECDSASignatureWithHint>::deserialize(ref signature);
-            if signature_with_hint.is_none() { return 0; }
+            if signature_with_hint.is_none() {
+                return 0;
+            }
 
             let pk_x = self.public_key_x.read();
             let pk_y = self.public_key_y.read();
             let public_key = Secp256k1PublicKey { x: pk_x, y: pk_y };
-            
+
             if verify_secp256k1_signature(signature_with_hint.unwrap(), public_key) {
                 starknet::VALIDATED
             } else {
@@ -162,7 +165,7 @@ pub mod StealthAccount {
     fn get_public_key(self: @ContractState) -> (u256, u256) {
         (self.public_key_x.read(), self.public_key_y.read())
     }
-    
+
     #[external(v0)]
     fn get_nonce(self: @ContractState) -> felt252 {
         self.nonce.read()

@@ -28,7 +28,7 @@ from poseidon_py.poseidon_hash import poseidon_hash_many
 # ═══════════════════════════════════════════════════════════════════════════════
 
 RPC_URL = os.environ.get("STARKNET_RPC_URL", "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/LfKXerIDAvp3ToDzzjfD8")
-STEALTH_ACCOUNT_CLASS_HASH = 0x331c518a72cfe1061da811efcb7ba2d98628ce9ac0c50a49d3b1c1d897d87e2
+STEALTH_ACCOUNT_CLASS_HASH = 0x03487cf5ae2106db423e02de50b934643c63d893f816966009c7270fb159256a
 STRK_TOKEN = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
 UDC_ADDRESS = 0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf
 GAS_REIMBURSEMENT = 10_000_000_000_000_000 # 0.01 STRK
@@ -109,7 +109,13 @@ def get_garaga_signature_calldata(msg_hash: int, priv_key: int) -> list:
     # Cairo expects: rx(4), s(2), v(1), z(2), hints...
     # z is at offset 7-8.
     serialized = list(sig.serialize_with_hints())
-    return serialized
+    
+    # Python serializes as: rx(0-3), s(4-5), v(6), px(7-10), py(11-14), z(15-16), hints(17+)...
+    # Cairo ECDSASignature struct expects: rx, s, v, z
+    # So we remove px(7-10) and py(11-14) which are indices 7 to 14
+    cleaned_serialized = serialized[:7] + serialized[15:]
+    
+    return cleaned_serialized
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEALTH ADDRESS COMPUTATION
@@ -255,9 +261,9 @@ async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int)
         invoke_tx = await sponsor_account.sign_invoke_v3(
             calls=calls,
             resource_bounds=ResourceBoundsMapping(
-                l1_gas=ResourceBounds(max_amount=1000, max_price_per_unit=100_000_000_000_000),
-                l2_gas=ResourceBounds(max_amount=2_000_000, max_price_per_unit=10_000_000_000),
-                l1_data_gas=ResourceBounds(max_amount=5000, max_price_per_unit=100_000_000_000_000)
+                l1_gas=ResourceBounds(max_amount=5000, max_price_per_unit=200_000_000_000_000),
+                l2_gas=ResourceBounds(max_amount=30_000_000, max_price_per_unit=10_000_000_000),
+                l1_data_gas=ResourceBounds(max_amount=50_000, max_price_per_unit=200_000_000_000_000)
             )
         )
         resp = await client.send_transaction(invoke_tx)
