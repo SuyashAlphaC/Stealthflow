@@ -1,10 +1,31 @@
 #!/usr/bin/env python3
 
 """
-StealthFlow Gasless Claim Script (Atomic)
-- Implements atomic gasless claim via Sponsor MultiCall.
-- Sponsor pays fees for Deployment + Transfer in a single transaction.
-- Uses Garaga ECDSA signatures for authorization.
+StealthFlow Gasless Claim Script - Manual Execution
+=====================================================
+
+This script allows recipients to claim their funds from a stealth address.
+The sponsor pays gas fees for deployment and transfer in a single atomic transaction.
+
+USAGE:
+    python3 gasless_claim.py --stealth-priv <PRIVATE_KEY> --to <RECIPIENT_ADDRESS> [--amount <AMOUNT_WEI>]
+
+REQUIRED ENVIRONMENT VARIABLES:
+    SPONSOR_ADDRESS      - Address of the sponsor account
+    SPONSOR_PRIVATE_KEY  - Private key of the sponsor account
+    STARKNET_RPC_URL     - (Optional) Custom RPC URL, defaults to Alchemy Sepolia
+
+EXAMPLES:
+    # Sweep all funds from stealth address to recipient:
+    python3 gasless_claim.py --stealth-priv 0x1234...abcd --to 0xrecipient...
+
+    # Transfer specific amount (in wei):
+    python3 gasless_claim.py --stealth-priv 0x1234...abcd --to 0xrecipient... --amount 1000000000000000000
+
+NOTES:
+    - The stealth private key is provided by the sender when they send you funds
+    - The recipient address should be your wallet address where you want to receive funds
+    - Amount is in wei (1 STRK = 1e18 wei). Use 0 or omit to sweep all available funds.
 """
 
 import os
@@ -27,7 +48,7 @@ from poseidon_py.poseidon_hash import poseidon_hash_many
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════════════════════
 
-RPC_URL = os.environ.get("STARKNET_RPC_URL", "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_7/LfKXerIDAvp3ToDzzjfD8")
+RPC_URL = os.environ.get("STARKNET_RPC_URL", "https://starknet-sepolia.g.alchemy.com/starknet/version/rpc/v0_8/LfKXerIDAvp3ToDzzjfD8")
 STEALTH_ACCOUNT_CLASS_HASH = 0x03487cf5ae2106db423e02de50b934643c63d893f816966009c7270fb159256a
 STRK_TOKEN = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
 UDC_ADDRESS = 0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf
@@ -180,7 +201,8 @@ async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int)
         ))
         balance = bal_resp[0]
         print(f"  Balance: {balance/1e18} STRK")
-    except:
+    except Exception as e:
+        print(f"  Balance check error: {e}")
         print("  Balance: 0 (or error)")
 
     if balance == 0:
@@ -258,18 +280,18 @@ async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int)
     # Execute Sponsor TX
     print(f"  🚀 Executing Atomic Transaction via Sponsor...")
     try:
-        invoke_tx = await sponsor_account.sign_invoke_v3(
+        # Use execute_v3 with full ResourceBoundsMapping (starknet-py 0.29.x)
+        result = await sponsor_account.execute_v3(
             calls=calls,
             resource_bounds=ResourceBoundsMapping(
                 l1_gas=ResourceBounds(max_amount=5000, max_price_per_unit=200_000_000_000_000),
-                l2_gas=ResourceBounds(max_amount=30_000_000, max_price_per_unit=10_000_000_000),
-                l1_data_gas=ResourceBounds(max_amount=50_000, max_price_per_unit=200_000_000_000_000)
+                l1_data_gas=ResourceBounds(max_amount=50000, max_price_per_unit=200_000_000_000_000),
+                l2_gas=ResourceBounds(max_amount=30_000_000, max_price_per_unit=10_000_000_000)
             )
         )
-        resp = await client.send_transaction(invoke_tx)
-        print(f"  TX Hash: {hex(resp.transaction_hash)}")
+        print(f"  TX Hash: {hex(result.transaction_hash)}")
         
-        await client.wait_for_tx(resp.transaction_hash)
+        await client.wait_for_tx(result.transaction_hash)
         print("  ✅ Claim Successful!")
         return True
     
@@ -278,18 +300,88 @@ async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int)
         return False
 
 async def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--stealth-priv", required=True)
-    parser.add_argument("--to", required=True)
-    parser.add_argument("--amount", default="0", help="Amount in wei (0 = sweep all)")
+    print("\n" + "="*60)
+    print("  StealthFlow Gasless Claim - Manual Execution")
+    print("="*60)
+    
+    parser = argparse.ArgumentParser(
+        description="Claim funds from a StealthFlow stealth address.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  Sweep all funds:
+    python3 gasless_claim.py --stealth-priv 0x1234...abcd --to 0xrecipient...
+  
+  Transfer specific amount:
+    python3 gasless_claim.py --stealth-priv 0x1234...abcd --to 0xrecipient... --amount 1000000000000000000
+        """
+    )
+    parser.add_argument(
+        "--stealth-priv", 
+        required=True,
+        help="Stealth private key (hex format, provided by sender)"
+    )
+    parser.add_argument(
+        "--to", 
+        required=True,
+        help="Recipient address (your wallet address)"
+    )
+    parser.add_argument(
+        "--amount", 
+        default="0", 
+        help="Amount to transfer in wei (0 = sweep all available funds minus gas)"
+    )
     
     args = parser.parse_args()
-    success = await gasless_claim(
-        int(args.stealth_priv, 16), 
-        args.to, 
-        int(args.amount)
-    )
-    sys.exit(0 if success else 1)
+    
+    # Validate inputs
+    stealth_priv = args.stealth_priv
+    if not stealth_priv.startswith("0x"):
+        stealth_priv = "0x" + stealth_priv
+    
+    recipient = args.to
+    if not recipient.startswith("0x"):
+        recipient = "0x" + recipient
+    
+    try:
+        stealth_priv_int = int(stealth_priv, 16)
+    except ValueError:
+        print("\n❌ Invalid stealth private key format. Must be a hex string.")
+        sys.exit(1)
+    
+    try:
+        amount = int(args.amount)
+    except ValueError:
+        print("\n❌ Invalid amount. Must be an integer (in wei).")
+        sys.exit(1)
+    
+    # Check sponsor configuration
+    if SPONSOR_ADDRESS == 0 or SPONSOR_PRIVATE_KEY == 0:
+        print("\n❌ Sponsor configuration missing!")
+        print("\nPlease set the following environment variables:")
+        print("  export SPONSOR_ADDRESS=0x...")
+        print("  export SPONSOR_PRIVATE_KEY=0x...")
+        print("\nThese are provided by the sender or the StealthFlow service.")
+        sys.exit(1)
+    
+    print(f"\n📋 Claim Details:")
+    print(f"   Recipient: {recipient}")
+    print(f"   Amount: {'Sweep All' if amount == 0 else f'{amount} wei ({amount/1e18:.6f} STRK)'}")
+    print(f"   Sponsor: {hex(SPONSOR_ADDRESS)}")
+    
+    # Execute claim
+    success = await gasless_claim(stealth_priv_int, recipient, amount)
+    
+    if success:
+        print("\n" + "="*60)
+        print("  🎉 Claim completed successfully!")
+        print("="*60 + "\n")
+        sys.exit(0)
+    else:
+        print("\n" + "="*60)
+        print("  ❌ Claim failed. Check the error messages above.")
+        print("="*60 + "\n")
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())

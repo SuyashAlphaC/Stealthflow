@@ -17,7 +17,7 @@ Your privacy is preserved by keeping the scanning logic entirely on your device.
 - **1-Byte View Tags**: Our protocol uses a 1-byte announcement tag to quickly filter out 254/255 irrelevant transactions without performing expensive cryptography, making scanning lighting fast.
 
 ### ⛽ Gasless Claims
-Withdraw your private funds without needing ETH for gas!
+Withdraw your private funds without needing STRK for gas!
 - **Zero-Funding Problem Solved**: Usually, a fresh stealth address has no ETH to pay for the withdrawal transaction.
 - **Paymaster Integration**: StealthFlow uses a Paymaster to sponsor the gas fees.
 - **Garaga Signatures**: We use **Garaga** to verify `secp256k1` signatures on-chain efficiently, allowing the stealth address to prove ownership and authorize the transfer to a relayer/paymaster without revealing the long-term identity.

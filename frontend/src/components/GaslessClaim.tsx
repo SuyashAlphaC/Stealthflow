@@ -7,9 +7,8 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Card, CardContent, CardHeader, CardTitle, CardFooter } from './ui/card';
 import { Badge } from './ui/badge';
-import { Loader2, Zap, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Copy, CheckCircle2, Terminal, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
-import { CONTRACTS, computeStealthAccountAddress, getProvider } from '../contracts';
 
 interface SelectedFund {
     stealthPub: Point;
@@ -25,25 +24,10 @@ interface Props {
     onClose: () => void;
 }
 
-interface ClaimStep {
-    id: number;
-    label: string;
-    status: 'pending' | 'active' | 'complete' | 'error';
-    detail?: string;
-}
-
 export function GaslessClaim({ fund, onClose }: Props) {
     const { address } = useAccount();
     const [recipientAddress, setRecipientAddress] = useState(address || '');
-    const [isClaiming, setIsClaiming] = useState(false);
-    const [claimStatus, setClaimStatus] = useState<'idle' | 'generating_proof' | 'submitting' | 'complete' | 'failed'>('idle');
-    const [claimTxHash, setClaimTxHash] = useState<string | null>(null);
-    const [steps, setSteps] = useState<ClaimStep[]>([
-        { id: 1, label: 'Generating Garaga Signature', status: 'pending', detail: '42-felt secp256k1 hints' },
-        { id: 2, label: 'Deploying Stealth Account', status: 'pending', detail: 'Counterfactual deployment' },
-        { id: 3, label: 'Executing Multi-call', status: 'pending', detail: 'Claim + Paymaster reimbursement' },
-        { id: 4, label: 'Verifying Completion', status: 'pending', detail: 'Transaction confirmed' },
-    ]);
+    const [copied, setCopied] = useState<string | null>(null);
 
     // Update recipient address when wallet connects
     useMemo(() => {
@@ -52,82 +36,17 @@ export function GaslessClaim({ fund, onClose }: Props) {
         }
     }, [address, recipientAddress]);
 
-    const handleClaim = async () => {
-        if (!fund) return;
-        if (!recipientAddress) {
-            toast.error("Please enter a recipient address");
-            return;
-        }
-
-        setIsClaiming(true);
-        setClaimStatus('generating_proof');
-        const toastId = toast.loading("Starting gasless claim...");
-
-        // Reset steps
-        setSteps(prev => prev.map(s => ({ ...s, status: 'pending' })));
-
-        try {
-            // Step 1: Generate Proof & Deploy
-            setSteps(prev => prev.map(s => s.id === 1 ? { ...s, status: 'active' } : s));
-            console.log('[Claim] Initiating claim via backend API...');
-
-            // Call the API endpoint
-            const response = await fetch('/api/claim', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    stealthPriv: "0x" + fund.stealthPriv.toString(16),
-                    recipient: recipientAddress,
-                    amount: fund.amount // Optional, for logging
-                }),
-            });
-
-            const data = await response.json();
-
-            if (!response.ok || !data.success) {
-                throw new Error(data.error || 'Claim failed');
-            }
-
-            console.log('[Claim] API Response:', data);
-
-            // Update Steps based on response
-            setSteps(prev => prev.map(s => s.id === 1 ? { ...s, status: 'complete' } : s));
-
-            // Step 2: Deploy
-            if (data.deployTxHash) {
-                setSteps(prev => prev.map(s => s.id === 2 ? { ...s, status: 'complete', detail: 'Deployed: ' + data.deployTxHash.slice(0, 6) } : s));
-            } else {
-                setSteps(prev => prev.map(s => s.id === 2 ? { ...s, status: 'complete', detail: 'Already Deployed' } : s));
-            }
-
-            // Step 3: Execute
-            if (data.transferTxHash) {
-                setSteps(prev => prev.map(s => s.id === 3 ? { ...s, status: 'complete', detail: 'Transfer: ' + data.transferTxHash.slice(0, 6) } : s));
-                setClaimTxHash(data.transferTxHash);
-            } else {
-                throw new Error("No transfer transaction hash returned");
-            }
-
-            // Step 4: Verify
-            setSteps(prev => prev.map(s => s.id === 4 ? { ...s, status: 'complete' } : s));
-            setClaimStatus('complete');
-
-            toast.success("Funds claimed successfully!", { id: toastId });
-
-        } catch (error: any) {
-            console.error('Claim failed:', error);
-            setClaimStatus('failed');
-            // Find currently active step and mark as error
-            setSteps(prev => prev.map(s => s.status === 'active' ? { ...s, status: 'error' } : s));
-            toast.error("Claim failed: " + error.message, { id: toastId });
-        } finally {
-            setIsClaiming(false);
-        }
+    const copyToClipboard = (text: string, label: string) => {
+        navigator.clipboard.writeText(text);
+        setCopied(label);
+        toast.success(`${label} copied to clipboard!`);
+        setTimeout(() => setCopied(null), 2000);
     };
 
     if (!fund) return null;
+
+    const stealthPrivHex = "0x" + fund.stealthPriv.toString(16);
+    const claimCommand = `python3 scripts/gasless_claim.py --stealth-priv ${stealthPrivHex} --to ${recipientAddress || '<YOUR_WALLET_ADDRESS>'}`;
 
     return (
         <div className="max-w-xl mx-auto space-y-6">
@@ -135,17 +54,20 @@ export function GaslessClaim({ fund, onClose }: Props) {
                 <ArrowLeft className="w-4 h-4" /> Back to Scanner
             </Button>
 
-            <Card className="border-green-500/20">
+            <Card className="border-yellow-500/20">
                 <CardHeader>
                     <div className="flex items-center justify-between">
                         <CardTitle className="flex items-center gap-2">
-                            <Zap className="w-5 h-5 text-yellow-500" />
-                            Gasless Claim
+                            <Terminal className="w-5 h-5 text-yellow-500" />
+                            Manual Claim Required
                         </CardTitle>
-                        <Badge variant="success">Ready to Claim</Badge>
+                        <Badge variant="outline" className="border-yellow-500 text-yellow-500">
+                            Ready to Claim
+                        </Badge>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
+                    {/* Fund Details */}
                     <div className="bg-muted/50 p-4 rounded-lg space-y-3">
                         <div className="flex justify-between items-center">
                             <span className="text-sm text-muted-foreground">Amount</span>
@@ -159,85 +81,100 @@ export function GaslessClaim({ fund, onClose }: Props) {
                         </div>
                     </div>
 
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium">Destination Wallet Address</label>
-                        <Input
-                            placeholder="0x..."
-                            value={recipientAddress}
-                            onChange={(e) => setRecipientAddress(e.target.value)}
-                            className="font-mono"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            The address where you want to receive the funds. It can be a fresh address with 0 ETH!
-                        </p>
-                    </div>
-
-                    {/* Progress Stepper used when claiming or complete */}
-                    {(isClaiming || claimStatus === 'complete' || claimStatus === 'failed') && (
-                        <div className="space-y-3 py-4 border-t border-border">
-                            <h4 className="text-xs font-semibold uppercase text-muted-foreground">Claim Progress</h4>
-                            {steps.map((step) => (
-                                <div key={step.id} className="flex items-start gap-3">
-                                    <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] border ${step.status === 'complete' ? 'bg-green-500 border-green-500 text-white' :
-                                        step.status === 'active' ? 'border-primary text-primary' :
-                                            step.status === 'error' ? 'bg-red-500 border-red-500 text-white' :
-                                                'border-muted text-muted-foreground'
-                                        }`}>
-                                        {step.status === 'complete' ? <CheckCircle2 className="w-3 h-3" /> :
-                                            step.status === 'active' ? <Loader2 className="w-3 h-3 animate-spin" /> :
-                                                step.status === 'error' ? '!' : step.id}
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className={`text-sm ${step.status === 'active' ? 'text-primary font-medium' :
-                                            step.status === 'complete' ? 'text-green-500' :
-                                                step.status === 'error' ? 'text-red-500' :
-                                                    'text-muted-foreground'
-                                            }`}>
-                                            {step.label}
-                                        </p>
-                                        {(step.detail && step.status !== 'pending') && (
-                                            <p className="text-xs text-muted-foreground">{step.detail}</p>
-                                        )}
-                                    </div>
-                                </div>
-                            ))}
+                    {/* Instructions */}
+                    <div className="space-y-4">
+                        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4">
+                            <h4 className="font-semibold text-blue-400 mb-2">📋 How to Claim</h4>
+                            <p className="text-sm text-muted-foreground">
+                                To claim your funds, run the Python script manually on your terminal.
+                                This ensures maximum security as your private key never leaves your device.
+                            </p>
                         </div>
-                    )}
 
-                    {claimStatus === 'complete' ? (
-                        <div className="text-center space-y-2 p-4 bg-green-500/10 rounded-lg border border-green-500/20">
-                            <CheckCircle2 className="w-8 h-8 text-green-500 mx-auto" />
-                            <h3 className="font-semibold text-green-500">Claim Successful!</h3>
-                            <p className="text-sm text-muted-foreground">Your funds have been transferred.</p>
-                            {claimTxHash && (
-                                <a
-                                    href={`https://sepolia.voyager.online/tx/${claimTxHash}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-xs text-primary hover:underline"
+                        {/* Step 1: Set Recipient */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Step 1: Set Destination Wallet</label>
+                            <Input
+                                placeholder="0x..."
+                                value={recipientAddress}
+                                onChange={(e) => setRecipientAddress(e.target.value)}
+                                className="font-mono"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Enter your wallet address where you want to receive the funds.
+                            </p>
+                        </div>
+
+                        {/* Step 2: Stealth Private Key */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Step 2: Your Stealth Private Key</label>
+                            <div className="flex gap-2">
+                                <Input
+                                    value={stealthPrivHex}
+                                    readOnly
+                                    className="font-mono text-xs flex-1"
+                                />
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => copyToClipboard(stealthPrivHex, 'Stealth Key')}
                                 >
-                                    View Transaction on Voyager
-                                </a>
-                            )}
+                                    {copied === 'Stealth Key' ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                                </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                ⚠️ Keep this private! This key is used to prove ownership of the stealth address.
+                            </p>
                         </div>
-                    ) : (
-                        <Button
-                            onClick={handleClaim}
-                            disabled={isClaiming || !recipientAddress}
-                            className="w-full h-12 text-lg"
-                            variant="primary"
-                        >
-                            {isClaiming ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Processing...
-                                </>
-                            ) : (
-                                "Claim Funds (Gasless)"
-                            )}
-                        </Button>
-                    )}
+
+                        {/* Step 3: Run Command */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Step 3: Run the Claim Command</label>
+                            <div className="bg-black/50 rounded-lg p-3 border border-border">
+                                <div className="flex items-start justify-between gap-2">
+                                    <code className="text-xs text-green-400 break-all flex-1">
+                                        {claimCommand}
+                                    </code>
+                                    <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="shrink-0"
+                                        onClick={() => copyToClipboard(claimCommand, 'Command')}
+                                    >
+                                        {copied === 'Command' ? <CheckCircle2 className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                                    </Button>
+                                </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                Run this command in the StealthFlow project directory.
+                                Make sure you have Python 3 and required dependencies installed.
+                            </p>
+                        </div>
+
+                        {/* Environment Variables Note */}
+                        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4">
+                            <h4 className="font-semibold text-yellow-400 mb-2">⚠️ Required Environment Variables</h4>
+                            <div className="space-y-1 font-mono text-xs text-muted-foreground">
+                                <p>export SPONSOR_ADDRESS=0x...</p>
+                                <p>export SPONSOR_PRIVATE_KEY=0x...</p>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-2">
+                                The sponsor account pays gas fees. Contact the sender or service provider for these values.
+                            </p>
+                        </div>
+                    </div>
                 </CardContent>
+                <CardFooter className="flex flex-col gap-3">
+                    <a
+                        href="https://github.com/your-repo/stealthflow#claiming-funds"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-primary hover:underline flex items-center gap-1"
+                    >
+                        <ExternalLink className="w-3 h-3" />
+                        View Documentation
+                    </a>
+                </CardFooter>
             </Card>
         </div>
     );
