@@ -35,6 +35,13 @@ import argparse
 import dataclasses
 import random
 
+# Load .env file if present (for easier local configuration)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Load from .env in current directory or parent directories
+except ImportError:
+    pass  # python-dotenv not installed, use shell environment only
+
 from starknet_py.net.full_node_client import FullNodeClient
 from starknet_py.net.account.account import Account
 from starknet_py.net.models import StarknetChainId
@@ -54,8 +61,12 @@ STRK_TOKEN = 0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d
 UDC_ADDRESS = 0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf
 GAS_REIMBURSEMENT = 10_000_000_000_000_000 # 0.01 STRK
 
-SPONSOR_ADDRESS = int(os.environ.get("SPONSOR_ADDRESS", "0x0"), 16)
-SPONSOR_PRIVATE_KEY = int(os.environ.get("SPONSOR_PRIVATE_KEY", "0x0"), 16)
+# Default Sponsor (can be overridden via environment variables)
+DEFAULT_SPONSOR_ADDRESS = "0x02EF4B784d45C2046B82Ad23435FAf6f508cd99eb49CdAD97140B0E896A04A30"
+DEFAULT_SPONSOR_PRIVATE_KEY = "0x004f14a4d6ec7f61c1163c8e2392d8cf9180317a02fc24e72ffde0c775beac0c"
+
+SPONSOR_ADDRESS = int(os.environ.get("SPONSOR_ADDRESS", DEFAULT_SPONSOR_ADDRESS), 16)
+SPONSOR_PRIVATE_KEY = int(os.environ.get("SPONSOR_PRIVATE_KEY", DEFAULT_SPONSOR_PRIVATE_KEY), 16)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SECP256K1 UTILITIES
