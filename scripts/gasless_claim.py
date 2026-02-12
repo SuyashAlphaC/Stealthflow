@@ -62,8 +62,8 @@ UDC_ADDRESS = 0x041a78e741e5af2fec34b695679bc6891742439f7afb8484ecd7766661ad02bf
 GAS_REIMBURSEMENT = 10_000_000_000_000_000 # 0.01 STRK
 
 # Default Sponsor (can be overridden via environment variables)
-DEFAULT_SPONSOR_ADDRESS = "0x0"
-DEFAULT_SPONSOR_PRIVATE_KEY = "0x0"
+DEFAULT_SPONSOR_ADDRESS = "0x02EF4B784d45C2046B82Ad23435FAf6f508cd99eb49CdAD97140B0E896A04A30"
+DEFAULT_SPONSOR_PRIVATE_KEY = "0x004f14a4d6ec7f61c1163c8e2392d8cf9180317a02fc24e72ffde0c775beac0c"
 
 SPONSOR_ADDRESS = int(os.environ.get("SPONSOR_ADDRESS", DEFAULT_SPONSOR_ADDRESS), 16)
 SPONSOR_PRIVATE_KEY = int(os.environ.get("SPONSOR_PRIVATE_KEY", DEFAULT_SPONSOR_PRIVATE_KEY), 16)
@@ -295,9 +295,9 @@ async def gasless_claim(stealth_priv: int, recipient: str, expected_amount: int)
         result = await sponsor_account.execute_v3(
             calls=calls,
             resource_bounds=ResourceBoundsMapping(
-                l1_gas=ResourceBounds(max_amount=5000, max_price_per_unit=200_000_000_000_000),
-                l1_data_gas=ResourceBounds(max_amount=50000, max_price_per_unit=200_000_000_000_000),
-                l2_gas=ResourceBounds(max_amount=30_000_000, max_price_per_unit=10_000_000_000)
+                l1_gas=ResourceBounds(max_amount=2000, max_price_per_unit=500_000_000_000_000),
+                l1_data_gas=ResourceBounds(max_amount=20000, max_price_per_unit=500_000_000_000_000),
+                l2_gas=ResourceBounds(max_amount=50_000_000, max_price_per_unit=10_000_000_000)
             )
         )
         print(f"  TX Hash: {hex(result.transaction_hash)}")
