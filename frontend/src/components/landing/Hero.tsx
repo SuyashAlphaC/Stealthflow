@@ -60,9 +60,11 @@ export function Hero() {
                             Launch App <ArrowRight className="w-5 h-5" />
                         </Button>
                     </Link>
-                    <Button variant="outline" size="lg" className="h-14 px-8 rounded-full text-lg hover:bg-muted/50">
-                        Read Documentation
-                    </Button>
+                    <Link href="https://github.com/SuyashAlphaC/Stealthflow" >
+                        <Button variant="outline" size="lg" className="h-14 px-8 rounded-full text-lg hover:bg-muted/50">
+                            Read Documentation
+                        </Button>
+                    </Link>
                 </motion.div>
 
                 {/* Stats Strip */}
@@ -85,6 +87,6 @@ export function Hero() {
                     </div>
                 </div>
             </motion.div>
-        </section>
+        </section >
     );
 }

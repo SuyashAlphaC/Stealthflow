@@ -1,6 +1,6 @@
 'use client';
 
-import { Github, Twitter } from 'lucide-react';
+import { FaXTwitter, FaGithub } from "react-icons/fa6";
 import Link from 'next/link';
 
 export function Footer() {
@@ -15,15 +15,17 @@ export function Footer() {
                 </div>
 
                 <div className="text-sm text-muted-foreground text-center md:text-left">
-                    © 2026 StealthFlow Protocol. Built on Starknet with ❤️.
+                    © 2026 StealthFlow Protocol.
                 </div>
 
                 <div className="flex gap-6">
-                    <Link href="https://github.com" target="_blank" className="text-muted-foreground hover:text-foreground transition-colors">
-                        <Github className="w-5 h-5" />
+                    <Link href="https://github.com/SuyashAlphaC/Stealthflow" target="_blank" className="text-muted-foreground hover:text-foreground transition-colors">
+                        <FaGithub size={24} />
+
                     </Link>
-                    <Link href="https://twitter.com" target="_blank" className="text-muted-foreground hover:text-foreground transition-colors">
-                        <Twitter className="w-5 h-5" />
+                    <Link href="https://x.com/stealthflowHQ" target="_blank" className="text-muted-foreground hover:text-foreground transition-colors">
+                        <FaXTwitter size={24} />
+
                     </Link>
                 </div>
             </div>
